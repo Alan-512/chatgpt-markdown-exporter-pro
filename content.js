@@ -397,7 +397,7 @@
         <div class="oai-exporter-tooltip">Export Chat</div>
       </div>
       <div class="oai-exporter-menu">
-        <div class="oai-exporter-header">Export Options (API)</div>
+        <div class="oai-exporter-header">Export Options</div>
         <button class="oai-exporter-item btn-md">
           ${mdIcon}
           Export Markdown (.md)
