@@ -27,12 +27,12 @@
   });
 
   // Request the conversation data from inject.js running in MAIN world
-  function requestConversationData(conversationId) {
+  function requestConversationData(conversationId, platform) {
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         pendingResolver = null;
         pendingRejecter = null;
-        reject(new Error('Request timed out. Please refresh the ChatGPT page and try again.'));
+        reject(new Error('Request timed out. Please refresh the page and try again.'));
       }, 8000);
 
       pendingResolver = (data) => {
@@ -43,12 +43,41 @@
         clearTimeout(timeoutId);
         reject(err);
       };
-      window.postMessage({ type: 'OAI_EXPORT_REQUEST', conversationId }, window.location.origin);
+      window.postMessage({ type: 'OAI_EXPORT_REQUEST', conversationId, platform }, window.location.origin);
     });
+  }
+
+  // Get active platform
+  function getPlatform() {
+    const host = window.location.hostname;
+    if (host.includes('claude.ai')) return 'claude';
+    if (host.includes('gemini.google.com')) return 'gemini';
+    return 'chatgpt';
   }
 
   // Get active conversation ID from the URL pathname
   function getActiveConversationId() {
+    const platform = getPlatform();
+    if (platform === 'claude') {
+      const match = window.location.pathname.match(/\/chat\/([a-f0-9-]+)/);
+      return match ? match[1] : null;
+    }
+    if (platform === 'gemini') {
+      const path = window.location.pathname.replace(/\/+$/, '');
+      const segs = path.split('/').filter(Boolean);
+      if (segs.length === 0) return null;
+      let i = 0;
+      if (segs[0] === 'u' && /^\d+$/.test(segs[1] || '')) {
+        i = 2;
+      }
+      if (segs[i] === 'app' && segs[i + 1]) {
+        return segs[i + 1];
+      }
+      if (segs[i] === 'gem' && segs[i + 1] && segs[i + 2]) {
+        return segs[i + 2];
+      }
+      return null;
+    }
     const match = window.location.pathname.match(/\/c\/([a-f0-9-]+)/);
     return match ? match[1] : null;
   }
@@ -279,6 +308,126 @@
     return result;
   }
 
+  // Normalize Claude's JSON data into the standardized internal model
+  function normalizeClaudeConversation(payload, conversationId) {
+    const rawData = payload.data || payload;
+    const result = {
+      conversationId: conversationId,
+      title: rawData.name || 'Claude Conversation',
+      url: window.location.href,
+      exportedAt: new Date().toISOString(),
+      source: 'network',
+      messages: [],
+      raw: rawData,
+      integrity: {
+        status: 'complete',
+        warnings: []
+      }
+    };
+
+    const chatMessages = rawData.chat_messages || [];
+    let messageIndex = 0;
+
+    for (const msg of chatMessages) {
+      const sender = msg.sender;
+      if (sender !== 'human' && sender !== 'assistant') continue;
+
+      const role = sender === 'human' ? 'user' : 'assistant';
+      let text = msg.text || '';
+
+      if (msg.attachments && msg.attachments.length > 0) {
+        const attachmentTexts = msg.attachments.map(att => {
+          return `[Attachment: ${att.file_name || att.name || 'file'}]`;
+        }).join('\n');
+        if (text) {
+          text = text + '\n\n' + attachmentTexts;
+        } else {
+          text = attachmentTexts;
+        }
+      }
+
+      const normalizedMsg = {
+        id: msg.uuid || `claude-msg-${messageIndex}`,
+        parentId: null,
+        index: messageIndex++,
+        role: role,
+        createdAt: msg.created_at || null,
+        content: [
+          {
+            type: 'markdown',
+            text: text
+          }
+        ],
+        raw: msg
+      };
+
+      result.messages.push(normalizedMsg);
+    }
+
+    return result;
+  }
+
+  // Normalize Gemini's batchexecute blocks into the standardized internal model
+  function normalizeGeminiConversation(payload, chatId) {
+    const result = {
+      conversationId: chatId,
+      title: payload.title || 'Gemini Conversation',
+      url: window.location.href,
+      exportedAt: new Date().toISOString(),
+      source: 'network',
+      messages: [],
+      raw: payload,
+      integrity: {
+        status: 'complete',
+        warnings: []
+      }
+    };
+
+    const blocks = payload.blocks || [];
+    let messageIndex = 0;
+
+    for (const block of blocks) {
+      const userMsg = {
+        id: `gemini-user-${messageIndex}`,
+        parentId: null,
+        index: messageIndex++,
+        role: 'user',
+        createdAt: block.tsPair ? new Date(block.tsPair[0] * 1000).toISOString() : null,
+        content: [
+          {
+            type: 'markdown',
+            text: block.userText || ''
+          }
+        ],
+        raw: block
+      };
+      result.messages.push(userMsg);
+
+      let assistantText = block.assistantText || '';
+      if (block.thoughtsText && block.thoughtsText.trim()) {
+        assistantText = `<details>\n<summary>Thinking Process</summary>\n\n${block.thoughtsText.trim()}\n</details>\n\n${assistantText}`;
+      }
+
+      const assistantMsg = {
+        id: `gemini-assistant-${messageIndex}`,
+        parentId: `gemini-user-${messageIndex - 1}`,
+        index: messageIndex++,
+        role: 'assistant',
+        createdAt: block.tsPair ? new Date(block.tsPair[0] * 1000).toISOString() : null,
+        content: [
+          {
+            type: 'markdown',
+            text: assistantText
+          }
+        ],
+        raw: block
+      };
+      result.messages.push(assistantMsg);
+    }
+
+    return result;
+  }
+
   // Format the normalized message model into a clean, presentation-ready Markdown string (Matching standard ChatGPT export style)
   function convertNormalizedToMarkdown(model) {
     let markdown = '';
@@ -292,7 +441,16 @@
       // Skip empty messages, system messages, or internal tool outputs (like web search or interpreter outputs)
       if (!text || role === 'tool' || role === 'system') continue;
 
-      const authorLabel = role === 'user' ? '**You:**' : '**ChatGPT:**';
+      let assistantName = 'Assistant';
+      const platform = getPlatform();
+      if (platform === 'claude') {
+        assistantName = 'Claude';
+      } else if (platform === 'gemini') {
+        assistantName = 'Gemini';
+      } else {
+        assistantName = 'ChatGPT';
+      }
+      const authorLabel = role === 'user' ? '**You:**' : `**${assistantName}:**`;
 
       if (lastAuthor === authorLabel) {
         // Merge consecutive messages from the same role to keep markdown clean and readable
@@ -348,15 +506,24 @@
     isExporting = true;
     setStatus('loading', 'Loading data...');
     try {
-      const rawData = await requestConversationData(conversationId);
-      const model = normalizeConversation(rawData);
+      const platform = getPlatform();
+      const rawData = await requestConversationData(conversationId, platform);
+      
+      let model;
+      if (platform === 'claude') {
+        model = normalizeClaudeConversation(rawData, conversationId);
+      } else if (platform === 'gemini') {
+        model = normalizeGeminiConversation(rawData, conversationId);
+      } else {
+        model = normalizeConversation(rawData);
+      }
       
       if (format === 'markdown') {
         const markdown = convertNormalizedToMarkdown(model);
         if (action === 'download') {
           const filename = `${sanitizeFilename(model.title)}_${new Date().toISOString().slice(0, 10)}.md`;
           triggerDownload(markdown, filename, 'text/markdown;charset=utf-8');
-          setStatus('ready', `Exported MD! (${model.integrity.status})`);
+          setStatus('ready', `Exported MD! (${model.integrity.status || 'complete'})`);
         } else if (action === 'copy') {
           await navigator.clipboard.writeText(markdown);
           setStatus('ready', 'Copied to clipboard!');
@@ -364,7 +531,7 @@
       } else if (format === 'json') {
         const filename = `${sanitizeFilename(model.title)}_${new Date().toISOString().slice(0, 10)}.json`;
         triggerDownload(JSON.stringify(model, null, 2), filename, 'application/json;charset=utf-8');
-        setStatus('ready', `Exported JSON! (${model.integrity.status})`);
+        setStatus('ready', `Exported JSON! (${model.integrity.status || 'complete'})`);
       }
 
       // Reset to ready status after a short delay
@@ -462,7 +629,7 @@
   function updateUIState() {
     const conversationId = getActiveConversationId();
     if (conversationId) {
-      if (!container) {
+      if (!document.getElementById('oai-exporter-container')) {
         initUI();
       }
       if (container) {
