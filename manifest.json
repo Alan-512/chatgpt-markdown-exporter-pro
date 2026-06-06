@@ -34,22 +34,22 @@
         "https://gemini.google.com/*",
         "https://*.gemini.google.com/*"
       ],
-      "js": ["inject.js"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
       "run_at": "document_start",
-      "world": "MAIN"
-    },
+      "world": "ISOLATED"
+    }
+  ],
+  "web_accessible_resources": [
     {
+      "resources": ["inject.js"],
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://gemini.google.com/*",
         "https://*.gemini.google.com/*"
-      ],
-      "js": ["content.js"],
-      "css": ["styles.css"],
-      "run_at": "document_end",
-      "world": "ISOLATED"
+      ]
     }
   ]
 }

@@ -1,49 +1,84 @@
 (function() {
+  // Generate a cryptographically secure token for cross-world message passing validation
+  const secureToken = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+    ? crypto.randomUUID() 
+    : Math.random().toString(36).substring(2) + Date.now().toString(36);
+
+  // Dynamically inject inject.js at document_start to establish fetch hooks in the MAIN world
+  try {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('inject.js');
+    script.dataset.token = secureToken;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove(); // Remove tag immediately to prevent page scripts from inspecting it
+  } catch (e) {
+    console.error('[Exporter] Failed to inject network interceptor:', e);
+  }
+
   let container = null;
   let fab = null;
   let menu = null;
   let statusDot = null;
   let statusText = null;
 
-  let pendingResolver = null;
-  let pendingRejecter = null;
+  // Active requests transaction map (prevents promise collisions and SPA race conditions)
+  const pendingRequests = {};
 
   // Helper utility for asynchronous delays
   const delay = ms => new Promise(res => setTimeout(res, ms));
 
-  // Security: Handle postMessage replies with strict origin checks
+  // Security: Handle postMessage replies with strict origin and token validation
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
+    
     const message = event.data;
     if (message && message.type === 'OAI_EXPORT_RESPONSE') {
-      if (message.success) {
-        if (pendingResolver) pendingResolver(message.data);
-      } else {
-        if (pendingRejecter) pendingRejecter(new Error(message.error));
+      // Security Check: Ignore message if token doesn't match
+      if (message.token !== secureToken) return;
+
+      const { requestId, success, data, error } = message;
+      const request = pendingRequests[requestId];
+      if (request) {
+        clearTimeout(request.timeoutId);
+        delete pendingRequests[requestId];
+
+        // SPA Navigation check: Cancel if user navigated away while fetching
+        if (getActiveConversationId() !== request.conversationId) {
+          request.reject(new Error('Export cancelled: Navigation detected.'));
+          return;
+        }
+
+        if (success) {
+          request.resolve(data);
+        } else {
+          request.reject(new Error(error || 'Failed to fetch conversation data.'));
+        }
       }
-      pendingResolver = null;
-      pendingRejecter = null;
     }
   });
 
   // Request the conversation data from inject.js running in MAIN world
   function requestConversationData(conversationId, platform) {
+    const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
+      ? crypto.randomUUID() 
+      : Math.random().toString(36).substring(2) + Date.now().toString(36);
+
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        pendingResolver = null;
-        pendingRejecter = null;
-        reject(new Error('Request timed out. Please refresh the page and try again.'));
+        if (pendingRequests[requestId]) {
+          delete pendingRequests[requestId];
+          reject(new Error('Request timed out. Please refresh the page and try again.'));
+        }
       }, 8000);
 
-      pendingResolver = (data) => {
-        clearTimeout(timeoutId);
-        resolve(data);
-      };
-      pendingRejecter = (err) => {
-        clearTimeout(timeoutId);
-        reject(err);
-      };
-      window.postMessage({ type: 'OAI_EXPORT_REQUEST', conversationId, platform }, window.location.origin);
+      pendingRequests[requestId] = { resolve, reject, timeoutId, conversationId };
+      window.postMessage({ 
+        type: 'OAI_EXPORT_REQUEST', 
+        conversationId, 
+        platform, 
+        requestId,
+        token: secureToken 
+      }, window.location.origin);
     });
   }
 
@@ -430,7 +465,20 @@
 
   // Format the normalized message model into a clean, presentation-ready Markdown string (Matching standard ChatGPT export style)
   function convertNormalizedToMarkdown(model) {
-    let markdown = '';
+    const platform = getPlatform();
+    let markdown = `# ${model.title}\n\n`;
+    markdown += `- **Source URL:** [Link](${model.url})\n`;
+    markdown += `- **Exported At:** ${new Date(model.exportedAt).toLocaleString()}\n`;
+    markdown += `- **Platform:** ${platform.toUpperCase()}\n`;
+    markdown += `- **Integrity Status:** ${model.integrity ? model.integrity.status : 'complete'}\n`;
+    if (model.integrity && model.integrity.warnings && model.integrity.warnings.length > 0) {
+      markdown += `- **Warnings:**\n`;
+      model.integrity.warnings.forEach(w => {
+        markdown += `  - ${w}\n`;
+      });
+    }
+    markdown += `\n---\n\n`;
+
     let lastAuthor = null;
 
     for (const msg of model.messages) {
@@ -438,11 +486,17 @@
       const contentItem = msg.content[0] || { text: '', type: 'markdown' };
       const text = contentItem.text.trim();
 
-      // Skip empty messages, system messages, or internal tool outputs (like web search or interpreter outputs)
-      if (!text || role === 'tool' || role === 'system') continue;
+      // Skip empty messages or system messages
+      if (!text || role === 'system') continue;
+
+      // Handle tool / code interpreter output
+      if (role === 'tool') {
+        markdown += `**Code Interpreter / Tool Output:**\n\n\`\`\`\n${text}\n\`\`\`\n\n`;
+        lastAuthor = 'tool';
+        continue;
+      }
 
       let assistantName = 'Assistant';
-      const platform = getPlatform();
       if (platform === 'claude') {
         assistantName = 'Claude';
       } else if (platform === 'gemini') {

@@ -1,11 +1,19 @@
 (function() {
+  const secureToken = document.currentScript ? document.currentScript.dataset.token : null;
   const conversationCache = {};
   let capturedToken = null;
 
   // Intercept fetch requests
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
-    const requestUrl = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+    let requestUrl = '';
+    if (typeof args[0] === 'string') {
+      requestUrl = args[0];
+    } else if (typeof URL !== 'undefined' && args[0] instanceof URL) {
+      requestUrl = args[0].href;
+    } else if (args[0] && typeof args[0] === 'object') {
+      requestUrl = args[0].url || '';
+    }
     const options = args[1] || {};
 
     // 1. Try to capture Authorization header from outgoing requests
@@ -546,7 +554,25 @@
     
     const message = event.data;
     if (message && message.type === 'OAI_EXPORT_REQUEST') {
-      const { conversationId, platform } = message;
+      // Security Check: Verify shared token to prevent eavesdropping and spoofing
+      if (!secureToken || message.token !== secureToken) return;
+
+      const { conversationId, platform, requestId } = message;
+
+      // Security Check: Verify conversationId format to prevent path traversal
+      const idPattern = platform === 'gemini' ? /^[a-zA-Z0-9_:-]+$/ : /^[a-f0-9-]+$/;
+      if (typeof conversationId !== 'string' || !idPattern.test(conversationId)) {
+        window.postMessage({
+          type: 'OAI_EXPORT_RESPONSE',
+          conversationId,
+          requestId,
+          token: secureToken,
+          success: false,
+          error: 'Invalid Conversation ID format.'
+        }, window.location.origin);
+        return;
+      }
+
       try {
         let data = conversationCache[conversationId];
         
@@ -571,6 +597,8 @@
         window.postMessage({
           type: 'OAI_EXPORT_RESPONSE',
           conversationId,
+          requestId,
+          token: secureToken,
           success: true,
           data
         }, window.location.origin);
@@ -578,6 +606,8 @@
         window.postMessage({
           type: 'OAI_EXPORT_RESPONSE',
           conversationId,
+          requestId,
+          token: secureToken,
           success: false,
           error: err.message
         }, window.location.origin);
