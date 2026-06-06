@@ -340,29 +340,62 @@
     if (!text) return '';
     let cleaned = text;
 
-    // 1. Convert Mermaid code artifacts into standard markdown blocks
-    const mermaidRegex = /<antArtifact[^>]*type="application\/vnd\.ant\.code"[^>]*language="mermaid"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
-    cleaned = cleaned.replace(mermaidRegex, (match, title, code) => {
-      return `### Artifact: ${title}\n\n\`\`\`mermaid\n${code.trim()}\n\`\`\`\n\n`;
+    // Regex to find all antArtifact blocks and parse their attributes
+    const artifactRegex = /<antArtifact\s+([^>]*?)>([\s\S]*?)<\/antArtifact>/gi;
+
+    cleaned = cleaned.replace(artifactRegex, (match, attrsStr, content) => {
+      // Parse attributes
+      const attrs = {};
+      const attrRegex = /(\w+)="([^"]*)"/g;
+      let attrMatch;
+      while ((attrMatch = attrRegex.exec(attrsStr)) !== null) {
+        attrs[attrMatch[1].toLowerCase()] = attrMatch[2];
+      }
+
+      const type = attrs.type || '';
+      const title = attrs.title || 'Artifact';
+      const lang = attrs.language || '';
+      const code = content.trim();
+
+      // 1. SVG Vector graphics - Keep raw SVG tag and strip antArtifact wrapper so it renders in markdown
+      if (type === 'image/svg+xml' || code.startsWith('<svg')) {
+        return `\n\n<!-- Artifact: ${title} -->\n${code}\n\n`;
+      }
+
+      // 2. Mermaid diagram - Render as standard Markdown Mermaid code block
+      if (lang === 'mermaid') {
+        return `\n\n### Artifact: ${title}\n\n\`\`\`mermaid\n${code}\n\`\`\`\n\n`;
+      }
+
+      // 3. React components - Wrap in jsx code blocks
+      if (type.includes('react') || type.includes('jsx')) {
+        return `\n\n### Artifact: ${title} (React Component)\n\n\`\`\`jsx\n${code}\n\`\`\`\n\n`;
+      }
+
+      // 4. HTML pages - Wrap in html code blocks
+      if (type === 'text/html') {
+        return `\n\n### Artifact: ${title} (HTML)\n\n\`\`\`html\n${code}\n\`\`\`\n\n`;
+      }
+
+      // 5. Code blocks (e.g. vnd.ant.code)
+      if (type.includes('code') || lang) {
+        const codeLang = lang || 'javascript';
+        return `\n\n### Artifact: ${title}\n\n\`\`\`${codeLang}\n${code}\n\`\`\`\n\n`;
+      }
+
+      // 6. Markdown - Keep as is
+      if (type === 'text/markdown') {
+        return `\n\n### Artifact: ${title}\n\n${code}\n\n`;
+      }
+
+      // Fallback - wrap in generic code block if it looks like code/tags, else plain text
+      if (code.startsWith('<') || code.includes('import ') || code.includes('export ')) {
+        return `\n\n### Artifact: ${title}\n\n\`\`\`\n${code}\n\`\`\`\n\n`;
+      }
+
+      return `\n\n### Artifact: ${title}\n\n${code}\n\n`;
     });
 
-    // 2. Convert standard code artifacts into markdown code blocks
-    const codeRegex = /<antArtifact[^>]*type="application\/vnd\.ant\.code"[^>]*language="([^"]*)"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
-    cleaned = cleaned.replace(codeRegex, (match, lang, title, code) => {
-      return `### Artifact: ${title}\n\n\`\`\`${lang}\n${code.trim()}\n\`\`\`\n\n`;
-    });
-
-    // 3. Clean SVG artifacts so they render natively in Markdown (strips <antArtifact> wrappers)
-    const svgRegex = /<antArtifact[^>]*type="image\/svg\+xml"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
-    cleaned = cleaned.replace(svgRegex, (match, title, svgContent) => {
-      return `\n\n<!-- Artifact: ${title} -->\n${svgContent.trim()}\n\n`;
-    });
-
-    // 4. Strip any other antArtifact wrapper tags but keep their contents
-    cleaned = cleaned.replace(/<antArtifact[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi, (match, title, content) => {
-      return `\n\n### Artifact: ${title}\n\n${content.trim()}\n\n`;
-    });
-    
     // Clean remaining tags if any
     cleaned = cleaned.replace(/<\/?antArtifact[^>]*>/gi, '');
 
