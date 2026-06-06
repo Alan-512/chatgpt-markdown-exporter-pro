@@ -336,7 +336,7 @@
   }
 
   // Normalize Claude's JSON data into the standardized internal model
-  function normalizeClaudeConversation(payload, conversationId) {
+  function normalizeClaudeConversation(payload, conversationId, includeThinking = false) {
     const rawData = payload.data || payload;
     const result = {
       conversationId: conversationId,
@@ -371,10 +371,6 @@
             thoughtsText += (block.thinking || '') + '\n\n';
           } else if (block.type === 'redacted_thinking') {
             thoughtsText += '*[Thinking process redacted]*\n\n';
-          } else if (block.type === 'tool_use') {
-            text += `*[Using tool: ${block.name || 'tool'}]*\n\n`;
-          } else if (block.type === 'tool_result') {
-            text += `*Output from tool:* \n\`\`\`\n${block.content || ''}\n\`\`\`\n\n`;
           }
         }
       } else if (typeof msg.text === 'string') {
@@ -384,7 +380,7 @@
       text = text.trim();
       thoughtsText = thoughtsText.trim();
 
-      if (thoughtsText) {
+      if (thoughtsText && includeThinking) {
         text = `<details>\n<summary>Thinking Process</summary>\n\n${thoughtsText}\n</details>\n\n${text}`;
       }
 
@@ -421,7 +417,7 @@
   }
 
   // Normalize Gemini's batchexecute blocks into the standardized internal model
-  function normalizeGeminiConversation(payload, chatId) {
+  function normalizeGeminiConversation(payload, chatId, includeThinking = false) {
     const result = {
       conversationId: chatId,
       title: payload.title || 'Gemini Conversation',
@@ -457,7 +453,7 @@
       result.messages.push(userMsg);
 
       let assistantText = block.assistantText || '';
-      if (block.thoughtsText && block.thoughtsText.trim()) {
+      if (includeThinking && block.thoughtsText && block.thoughtsText.trim()) {
         assistantText = `<details>\n<summary>Thinking Process</summary>\n\n${block.thoughtsText.trim()}\n</details>\n\n${assistantText}`;
       }
 
@@ -581,11 +577,14 @@
       const platform = getPlatform();
       const rawData = await requestConversationData(conversationId, platform);
       
+      const includeThinkingCheckbox = document.getElementById('oai-exporter-include-thinking');
+      const includeThinking = includeThinkingCheckbox ? includeThinkingCheckbox.checked : false;
+
       let model;
       if (platform === 'claude') {
-        model = normalizeClaudeConversation(rawData, conversationId);
+        model = normalizeClaudeConversation(rawData, conversationId, includeThinking);
       } else if (platform === 'gemini') {
-        model = normalizeGeminiConversation(rawData, conversationId);
+        model = normalizeGeminiConversation(rawData, conversationId, includeThinking);
       } else {
         model = normalizeConversation(rawData);
       }
@@ -650,6 +649,14 @@
           ${copyIcon}
           Copy Markdown
         </button>
+        
+        <div class="oai-exporter-divider"></div>
+        <div class="oai-exporter-checkbox-container">
+          <label class="oai-exporter-checkbox-label">
+            <input type="checkbox" id="oai-exporter-include-thinking" />
+            <span>Include Thinking Process</span>
+          </label>
+        </div>
         
         <div class="oai-exporter-divider"></div>
         <div class="oai-exporter-status">
