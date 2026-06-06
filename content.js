@@ -315,17 +315,6 @@
       result.integrity.status = 'incomplete';
       result.integrity.warnings.push('No valid user, assistant, or tool messages resolved.');
     } else {
-      // 1. Check sequence anomalies (consecutive identical roles)
-      let lastRole = '';
-      for (let i = 0; i < messages.length; i++) {
-        const currentRole = messages[i].role;
-        if (currentRole === lastRole && (currentRole === 'user' || currentRole === 'assistant')) {
-          result.integrity.status = 'probably-complete';
-          result.integrity.warnings.push(`Sequence anomaly: Consecutive messages from same role "${currentRole}" at index ${i}.`);
-        }
-        lastRole = currentRole;
-      }
-
       // 2. Check if first message is from User
       if (messages[0].role !== 'user') {
         result.integrity.status = 'probably-complete';
@@ -368,7 +357,33 @@
       if (sender !== 'human' && sender !== 'assistant') continue;
 
       const role = sender === 'human' ? 'user' : 'assistant';
-      let text = msg.text || '';
+      let text = '';
+      let thoughtsText = '';
+
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            text += (block.text || '') + '\n\n';
+          } else if (block.type === 'thinking') {
+            thoughtsText += (block.thinking || '') + '\n\n';
+          } else if (block.type === 'redacted_thinking') {
+            thoughtsText += '*[Thinking process redacted]*\n\n';
+          } else if (block.type === 'tool_use') {
+            text += `*[Using tool: ${block.name || 'tool'}]*\n\n`;
+          } else if (block.type === 'tool_result') {
+            text += `*Output from tool:* \n\`\`\`\n${block.content || ''}\n\`\`\`\n\n`;
+          }
+        }
+      } else if (typeof msg.text === 'string') {
+        text = msg.text;
+      }
+
+      text = text.trim();
+      thoughtsText = thoughtsText.trim();
+
+      if (thoughtsText) {
+        text = `<details>\n<summary>Thinking Process</summary>\n\n${thoughtsText}\n</details>\n\n${text}`;
+      }
 
       if (msg.attachments && msg.attachments.length > 0) {
         const attachmentTexts = msg.attachments.map(att => {
@@ -602,6 +617,7 @@
   // Initialize and inject the UI elements into the page
   function initUI() {
     if (document.getElementById('oai-exporter-container')) return;
+    if (!document.body) return;
 
     container = document.createElement('div');
     container.id = 'oai-exporter-container';
@@ -657,8 +673,8 @@
     // Close menu when clicking outside
     document.addEventListener('click', (e) => {
       if (container && !container.contains(e.target)) {
-        menu.classList.remove('show');
-        fab.classList.remove('open');
+        if (menu) menu.classList.remove('show');
+        if (fab) fab.classList.remove('open');
       }
     });
 
@@ -692,8 +708,8 @@
     } else {
       if (container) {
         container.style.display = 'none';
-        menu.classList.remove('show');
-        fab.classList.remove('open');
+        if (menu) menu.classList.remove('show');
+        if (fab) fab.classList.remove('open');
       }
     }
   }
