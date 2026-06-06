@@ -267,6 +267,10 @@
       const role = message.author ? message.author.role : '';
       if (role === 'system') continue;
 
+      const isCode = message.recipient === 'python' || (message.content && message.content.content_type === 'code');
+      // Skip non-Python tool messages (e.g. browser/web search tool queries)
+      if (role === 'tool' && !isCode) continue;
+
       // Extract text content
       let text = '';
       if (message.content && message.content.parts) {
@@ -285,7 +289,6 @@
         text = text.replace(/\uE200[^\uE201]*\uE201/g, '').replace(/[\uE200-\uE202]/g, '');
       }
 
-      const isCode = message.recipient === 'python' || (message.content && message.content.content_type === 'code');
       const contentType = isCode ? 'code' : (role === 'tool' ? 'tool' : 'markdown');
 
       const normalizedMsg = {
