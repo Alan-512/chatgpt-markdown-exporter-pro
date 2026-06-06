@@ -335,6 +335,40 @@
     return result;
   }
 
+  // Clean and convert Claude's XML <antArtifact> tags into standard Markdown elements
+  function cleanClaudeArtifacts(text) {
+    if (!text) return '';
+    let cleaned = text;
+
+    // 1. Convert Mermaid code artifacts into standard markdown blocks
+    const mermaidRegex = /<antArtifact[^>]*type="application\/vnd\.ant\.code"[^>]*language="mermaid"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
+    cleaned = cleaned.replace(mermaidRegex, (match, title, code) => {
+      return `### Artifact: ${title}\n\n\`\`\`mermaid\n${code.trim()}\n\`\`\`\n\n`;
+    });
+
+    // 2. Convert standard code artifacts into markdown code blocks
+    const codeRegex = /<antArtifact[^>]*type="application\/vnd\.ant\.code"[^>]*language="([^"]*)"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
+    cleaned = cleaned.replace(codeRegex, (match, lang, title, code) => {
+      return `### Artifact: ${title}\n\n\`\`\`${lang}\n${code.trim()}\n\`\`\`\n\n`;
+    });
+
+    // 3. Clean SVG artifacts so they render natively in Markdown (strips <antArtifact> wrappers)
+    const svgRegex = /<antArtifact[^>]*type="image\/svg\+xml"[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi;
+    cleaned = cleaned.replace(svgRegex, (match, title, svgContent) => {
+      return `\n\n<!-- Artifact: ${title} -->\n${svgContent.trim()}\n\n`;
+    });
+
+    // 4. Strip any other antArtifact wrapper tags but keep their contents
+    cleaned = cleaned.replace(/<antArtifact[^>]*title="([^"]*)"[^>]*>([\s\S]*?)<\/antArtifact>/gi, (match, title, content) => {
+      return `\n\n### Artifact: ${title}\n\n${content.trim()}\n\n`;
+    });
+    
+    // Clean remaining tags if any
+    cleaned = cleaned.replace(/<\/?antArtifact[^>]*>/gi, '');
+
+    return cleaned;
+  }
+
   // Normalize Claude's JSON data into the standardized internal model
   function normalizeClaudeConversation(payload, conversationId, includeThinking = false) {
     const rawData = payload.data || payload;
@@ -378,6 +412,7 @@
       }
 
       text = text.trim();
+      text = cleanClaudeArtifacts(text);
       thoughtsText = thoughtsText.trim();
 
       if (thoughtsText && includeThinking) {
