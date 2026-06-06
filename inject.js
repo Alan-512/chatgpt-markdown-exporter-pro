@@ -139,22 +139,32 @@
   async function fetchClaudeConversation(conversationId) {
     const orgResponse = await originalFetch('/api/organizations');
     if (!orgResponse.ok) {
-      throw new Error(`Failed to fetch Claude organizations: ${orgResponse.statusText}`);
+      throw new Error(`Failed to fetch Claude organizations: ${orgResponse.statusText} (${orgResponse.status})`);
     }
     const orgs = await orgResponse.json();
     if (!orgs || orgs.length === 0) {
       throw new Error('No Claude organization found.');
     }
-    const orgId = orgs[0].uuid;
 
-    const convResponse = await originalFetch(`/api/organizations/${orgId}/chat_conversations/${conversationId}`);
-    if (!convResponse.ok) {
-      throw new Error(`Failed to fetch Claude conversation: ${convResponse.statusText}`);
+    let lastError = null;
+    for (const org of orgs) {
+      if (!org || !org.uuid) continue;
+      const orgId = org.uuid;
+      try {
+        const convResponse = await originalFetch(`/api/organizations/${orgId}/chat_conversations/${conversationId}`);
+        if (convResponse.ok) {
+          const data = await convResponse.json();
+          const result = { source: 'claude', orgId, data };
+          conversationCache[conversationId] = result;
+          return result;
+        } else {
+          lastError = new Error(`Failed to fetch Claude conversation: ${convResponse.statusText || 'Unknown'} (${convResponse.status})`);
+        }
+      } catch (e) {
+        lastError = e;
+      }
     }
-    const data = await convResponse.json();
-    const result = { source: 'claude', orgId, data };
-    conversationCache[conversationId] = result;
-    return result;
+    throw lastError || new Error('Failed to fetch Claude conversation from any organization.');
   }
 
   // Gemini specific helper utilities and fetchers
