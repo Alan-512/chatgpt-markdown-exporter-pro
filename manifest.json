@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Markdown Exporter Pro",
-  "version": "1.0",
-  "description": "Instantly export complete ChatGPT conversations to Markdown or JSON without scrolling. Handles ultra-long chats, LaTeX, and code interpreter outputs.",
+  "version": "1.3",
+  "description": "Instantly export AI conversations from ChatGPT, Claude, Gemini, and Perplexity to Markdown or JSON. Handles long chats, LaTeX, citations, and code outputs.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -23,7 +23,9 @@
     "https://chat.openai.com/*",
     "https://claude.ai/*",
     "https://gemini.google.com/*",
-    "https://*.gemini.google.com/*"
+    "https://*.gemini.google.com/*",
+    "https://perplexity.ai/*",
+    "https://www.perplexity.ai/*"
   ],
   "content_scripts": [
     {
@@ -32,7 +34,9 @@
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://gemini.google.com/*",
-        "https://*.gemini.google.com/*"
+        "https://*.gemini.google.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],
@@ -48,7 +52,9 @@
         "https://chat.openai.com/*",
         "https://claude.ai/*",
         "https://gemini.google.com/*",
-        "https://*.gemini.google.com/*"
+        "https://*.gemini.google.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*"
       ]
     }
   ]

@@ -1,6 +1,7 @@
 (function() {
   const secureToken = document.currentScript ? document.currentScript.dataset.token : null;
   const conversationCache = {};
+  const PERPLEXITY_LAST_CACHE_KEY = '__perplexity_last_conversation__';
   let capturedToken = null;
 
   // Intercept fetch requests
@@ -74,6 +75,12 @@
           console.error('[Exporter Inject] Error processing Claude fetch:', e);
         }
       }
+    }
+
+    // 3. Perplexity changes its private endpoints frequently, so cache any plausible
+    // thread payload observed through the page's own authenticated fetches.
+    if (typeof requestUrl === 'string' && isPerplexityHost()) {
+      maybeCachePerplexityResponse(requestUrl, response);
     }
 
     return response;
@@ -558,6 +565,617 @@
     return conversationData;
   }
 
+  // Perplexity helpers. The site has changed private APIs multiple times, so this
+  // exporter uses layered extraction: cached internal JSON first, hydration data
+  // second, and visible thread DOM as a final fallback.
+  function isPerplexityHost() {
+    return /(^|\.)perplexity\.ai$/i.test(window.location.hostname);
+  }
+
+  function getPerplexityRouteId() {
+    const segs = window.location.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+    if (segs.length === 0) return null;
+    const threadRouteIndex = segs.findIndex(seg => seg === 'search' || seg === 'page');
+    if (threadRouteIndex >= 0 && segs[threadRouteIndex + 1]) return segs[threadRouteIndex + 1];
+    return segs[segs.length - 1] || null;
+  }
+
+  function cleanPerplexityText(text) {
+    if (typeof text !== 'string') return '';
+    return text
+      .replace(/\u0000/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function cleanPerplexityMarkdown(text) {
+    if (typeof text !== 'string') return '';
+    const collapsed = text
+      .replace(/\u0000/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n\s*(- )/g, '\n$1')
+      .replace(/\n{2,}\s*(\d+\. )/g, '\n$1')
+      .replace(/([。！？!?；;：:，,.])\s*\n+\s*\(\[/g, '$1([')
+      .replace(/([。！？!?；;：:，,.])\s*\n+\s*（\[/g, '$1（[')
+      .replace(/([^\n])\n+\s*\(\[/g, '$1([')
+      .replace(/([^\n])\n+\s*（\[/g, '$1（[')
+      .replace(/([\u4e00-\u9fff])\s+\(\[/g, '$1([')
+      .replace(/([\u4e00-\u9fff。！？!?；;：:，,.])\s+\(\[/g, '$1([')
+      .replace(/\s+\(\[/g, ' ([')
+      .replace(/\s+（\[/g, '（[')
+      .replace(/\n{2,}\s*\(/g, '(')
+      .replace(/\n{2,}\s*（/g, '（')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{2,}\s*\n/g, '\n\n')
+      .trim();
+    return collapsed
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .join('\n')
+      .replace(/([。！？!?；;：:，,.])\s*\n+\s*\(\[/g, '$1([')
+      .replace(/([。！？!?；;：:，,.])\s*\n+\s*（\[/g, '$1（[')
+      .replace(/([^\n])\n+\s*\(\[/g, '$1([')
+      .replace(/([^\n])\n+\s*（\[/g, '$1（[')
+      .replace(/([\u4e00-\u9fff。！？!?；;：:，,.])\s+\(\[/g, '$1([');
+  }
+
+  function toAbsolutePerplexityUrl(href) {
+    if (!href || typeof href !== 'string') return '';
+    const trimmed = href.trim();
+    if (!trimmed || trimmed === '#' || /^javascript:/i.test(trimmed)) return '';
+    try {
+      return new URL(trimmed, window.location.href).href;
+    } catch {
+      return '';
+    }
+  }
+
+  function escapeMarkdownLabel(label) {
+    return cleanPerplexityText(label)
+      .replace(/\s+/g, ' ')
+      .replace(/[\[\]]/g, '')
+      .trim();
+  }
+
+  function addPerplexitySourceMapEntry(map, label, url) {
+    const cleanLabel = escapeMarkdownLabel(label);
+    const absoluteUrl = toAbsolutePerplexityUrl(url);
+    if (!cleanLabel || !absoluteUrl) return;
+
+    const variants = new Set([
+      cleanLabel,
+      cleanLabel.replace(/\s*\+\d+\s*$/, '').trim()
+    ]);
+
+    try {
+      const parsed = new URL(absoluteUrl);
+      const host = parsed.hostname.replace(/^www\./i, '');
+      variants.add(host);
+      variants.add(host.split('.')[0]);
+    } catch {}
+
+    const domainLike = cleanLabel.match(/[a-z0-9][a-z0-9.-]+\.[a-z]{2,}/i);
+    if (domainLike) {
+      const domain = domainLike[0].replace(/^www\./i, '');
+      variants.add(domain);
+      variants.add(domain.split('.')[0]);
+    }
+
+    for (const variant of variants) {
+      if (variant) map.set(variant.toLowerCase(), absoluteUrl);
+    }
+  }
+
+  function collectPerplexitySourceLinkMap() {
+    const map = new Map();
+    for (const anchor of document.querySelectorAll('a[href]')) {
+      const url = toAbsolutePerplexityUrl(anchor.getAttribute('href'));
+      if (!url) continue;
+      const label = cleanPerplexityText(anchor.innerText || anchor.textContent || '');
+      addPerplexitySourceMapEntry(map, label, url);
+      addPerplexitySourceMapEntry(map, anchor.getAttribute('aria-label') || '', url);
+      addPerplexitySourceMapEntry(map, anchor.getAttribute('title') || '', url);
+    }
+    return map;
+  }
+
+  function isPerplexityCitationLikeLabel(label) {
+    const text = cleanPerplexityText(label).replace(/\s+/g, ' ');
+    if (!text || text.length > 80) return false;
+    if (/\+\d+\s*$/.test(text)) return true;
+    if (/^[a-z0-9][a-z0-9.-]{2,}$/i.test(text)) return true;
+    return false;
+  }
+
+  function getPerplexityElementAttrs(el) {
+    return [
+      el.getAttribute('data-testid'),
+      el.getAttribute('aria-label'),
+      el.getAttribute('role'),
+      el.getAttribute('title'),
+      typeof el.className === 'string' ? el.className : '',
+      el.tagName
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+
+  function isPerplexityCitationElement(el) {
+    if (!(el instanceof HTMLElement)) return false;
+    const text = cleanPerplexityText(el.innerText || el.textContent || '').replace(/\s+/g, ' ');
+    if (!isPerplexityCitationLikeLabel(text)) return false;
+    if (/\+\d+\s*$/.test(text)) return true;
+
+    const attrs = getPerplexityElementAttrs(el);
+    if (/source|citation|cite|reference|badge|pill|rounded/.test(attrs)) return true;
+    if (el.tagName === 'A') return true;
+
+    return false;
+  }
+
+  function formatPerplexityCitation(label, href, sourceLinkMap) {
+    const cleanLabel = escapeMarkdownLabel(label);
+    if (!cleanLabel) return '';
+
+    const baseLabel = cleanLabel.replace(/\s*\+\d+\s*$/, '').trim().toLowerCase();
+    const baseWithoutTld = baseLabel.includes('.') ? baseLabel.split('.')[0] : baseLabel;
+    const url = toAbsolutePerplexityUrl(href) ||
+      sourceLinkMap.get(cleanLabel.toLowerCase()) ||
+      sourceLinkMap.get(baseLabel) ||
+      sourceLinkMap.get(baseWithoutTld) ||
+      '';
+
+    return url ? `([${cleanLabel}](${url}))` : `(${cleanLabel})`;
+  }
+
+  function extractPerplexityElementMarkdown(rootEl, sourceLinkMap) {
+    const blockTags = new Set(['ARTICLE', 'BLOCKQUOTE', 'DIV', 'H1', 'H2', 'H3', 'H4', 'P', 'SECTION']);
+
+    function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+      const el = node;
+      const tag = el.tagName;
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG'].includes(tag)) return '';
+      if (el.getAttribute('aria-hidden') === 'true') return '';
+      if (tag === 'BR') return '\n';
+
+      if (isPerplexityCitationElement(el)) {
+        const anchor = tag === 'A' ? el : (el.querySelector('a[href]') || el.closest('a[href]'));
+        return formatPerplexityCitation(el.innerText || el.textContent || '', anchor ? anchor.getAttribute('href') : '', sourceLinkMap);
+      }
+
+      if (tag === 'A') {
+        const label = escapeMarkdownLabel(el.innerText || el.textContent || 'Link');
+        const url = toAbsolutePerplexityUrl(el.getAttribute('href'));
+        if (!label) return '';
+        if (!url) return label;
+        return isPerplexityCitationLikeLabel(label) ? `([${label}](${url}))` : `[${label}](${url})`;
+      }
+
+      if (tag === 'IMG') {
+        const alt = escapeMarkdownLabel(el.getAttribute('alt') || 'Image');
+        const src = toAbsolutePerplexityUrl(el.getAttribute('src'));
+        return src ? `![${alt}](${src})` : '';
+      }
+
+      const content = Array.from(el.childNodes).map(walk).join('');
+      if (!content.trim()) return '';
+      if (tag === 'LI') return `\n- ${content.trim()}\n`;
+      if (['UL', 'OL'].includes(tag)) return `\n${content.trim()}\n`;
+      if (blockTags.has(tag)) return `\n${content.trim()}\n`;
+      return content;
+    }
+
+    return cleanPerplexityMarkdown(walk(rootEl));
+  }
+
+  function normalizePerplexityRole(role) {
+    const value = String(role || '').toLowerCase();
+    if (/user|human|query|question|prompt/.test(value)) return 'user';
+    if (/assistant|answer|ai|bot|response|perplexity/.test(value)) return 'assistant';
+    return null;
+  }
+
+  function getFirstString(obj, keys) {
+    if (!obj || typeof obj !== 'object') return '';
+    for (const key of keys) {
+      const value = obj[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (Array.isArray(value)) {
+        const joined = value
+          .map(item => typeof item === 'string' ? item : '')
+          .filter(Boolean)
+          .join('\n')
+          .trim();
+        if (joined) return joined;
+      }
+    }
+    return '';
+  }
+
+  function getDeepText(value, depth = 0) {
+    if (depth > 4 || value == null) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+      return value.map(item => getDeepText(item, depth + 1)).filter(Boolean).join('\n');
+    }
+    if (typeof value === 'object') {
+      const direct = getFirstString(value, [
+        'markdown', 'answer', 'response', 'content', 'text', 'body',
+        'query', 'query_str', 'question', 'prompt', 'message'
+      ]);
+      if (direct) return direct;
+      if (Array.isArray(value.parts)) return getDeepText(value.parts, depth + 1);
+      if (Array.isArray(value.children)) return getDeepText(value.children, depth + 1);
+    }
+    return '';
+  }
+
+  function extractPerplexitySources(node) {
+    const sources = [];
+    const seen = new Set();
+
+    function addSource(source) {
+      if (!source || typeof source !== 'object') return;
+      const url = getFirstString(source, ['url', 'link', 'source_url', 'display_url']);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      sources.push({
+        url,
+        title: getFirstString(source, ['title', 'name', 'display_name', 'site_name']) || url
+      });
+    }
+
+    function walk(value, depth = 0) {
+      if (depth > 5 || value == null) return;
+      if (Array.isArray(value)) {
+        for (const item of value) walk(item, depth + 1);
+        return;
+      }
+      if (typeof value !== 'object') return;
+      addSource(value);
+      for (const key of ['sources', 'citations', 'web_results', 'webResults', 'links', 'references']) {
+        if (value[key]) walk(value[key], depth + 1);
+      }
+    }
+
+    walk(node);
+    return sources;
+  }
+
+  function pushPerplexityMessage(messages, seen, role, text, raw, sources) {
+    const cleaned = cleanPerplexityText(text);
+    if (!role || !cleaned || cleaned.length < 2) return;
+
+    const key = `${role}:${cleaned}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    messages.push({
+      id: raw?.uuid || raw?.id || raw?.message_id || `perplexity-${messages.length}`,
+      role,
+      text: cleaned,
+      createdAt: raw?.created_at || raw?.createdAt || raw?.timestamp || null,
+      sources: Array.isArray(sources) ? sources : [],
+      metadata: raw && typeof raw === 'object' ? { extractionHint: raw.type || raw.kind || null } : {}
+    });
+  }
+
+  function extractPerplexityMessagesFromJson(root) {
+    const messages = [];
+    const seen = new Set();
+    const userKeys = ['query_str', 'query', 'question', 'prompt', 'user_prompt', 'userQuery'];
+    const assistantKeys = ['answer', 'response', 'final_answer', 'markdown_answer', 'bot_response', 'content'];
+
+    function scan(node, depth = 0) {
+      if (depth > 10 || node == null) return;
+
+      if (Array.isArray(node)) {
+        for (const item of node) scan(item, depth + 1);
+        return;
+      }
+
+      if (typeof node !== 'object') return;
+
+      const role = normalizePerplexityRole(node.role || node.author_role || node.sender || node.type || node.kind);
+      if (role) {
+        const roleText = getDeepText(node);
+        pushPerplexityMessage(messages, seen, role, roleText, node, role === 'assistant' ? extractPerplexitySources(node) : []);
+      }
+
+      const queryText = getFirstString(node, userKeys);
+      const answerText = getFirstString(node, assistantKeys);
+      if (queryText && answerText && cleanPerplexityText(queryText) !== cleanPerplexityText(answerText)) {
+        pushPerplexityMessage(messages, seen, 'user', queryText, node, []);
+        pushPerplexityMessage(messages, seen, 'assistant', answerText, node, extractPerplexitySources(node));
+      }
+
+      for (const value of Object.values(node)) {
+        if (value && (Array.isArray(value) || typeof value === 'object')) scan(value, depth + 1);
+      }
+    }
+
+    scan(root);
+    return messages;
+  }
+
+  function findPerplexityTitle(root, messages) {
+    const fromDoc = document.title
+      .replace(/\s*-\s*Perplexity\s*$/i, '')
+      .replace(/^Perplexity\s*-\s*/i, '')
+      .trim();
+    if (fromDoc && fromDoc.toLowerCase() !== 'perplexity') return fromDoc;
+
+    const direct = getFirstString(root, ['title', 'name', 'thread_title', 'display_title']);
+    if (direct) return direct;
+
+    const firstUser = messages.find(msg => msg.role === 'user' && msg.text);
+    return firstUser ? firstUser.text.slice(0, 80) : 'Perplexity Conversation';
+  }
+
+  function getPerplexityDomText(el) {
+    if (!el) return '';
+    // Prefer textContent because innerText can reflect CSS line-clamp / visual truncation.
+    return cleanPerplexityText(el.textContent || el.innerText || '');
+  }
+
+  function isLikelyTruncatedQuestion(text) {
+    return /[.…]\s*$/.test(cleanPerplexityText(text));
+  }
+
+  function isBeforePerplexityElement(el, boundaryEl) {
+    if (!el || !boundaryEl || el === boundaryEl) return false;
+    if (el.contains(boundaryEl) || boundaryEl.contains(el)) return false;
+    const pos = el.compareDocumentPosition(boundaryEl);
+    return Boolean(pos & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  function getPerplexityVisibleQuestion(firstAssistantEl = null) {
+    const candidates = [];
+    const selectors = [
+      'main [data-testid*="user" i]',
+      'main [data-testid*="human" i]',
+      'main [class*="user" i]',
+      'main div',
+      'main p'
+    ];
+
+    for (const selector of selectors) {
+      try {
+        for (const el of document.querySelectorAll(selector)) {
+          if (!(el instanceof HTMLElement)) continue;
+          if (firstAssistantEl && !isBeforePerplexityElement(el, firstAssistantEl)) continue;
+          if (['BUTTON', 'A', 'NAV', 'ASIDE'].includes(el.tagName)) continue;
+          if (el.closest('button,a,nav,aside')) continue;
+          const text = getPerplexityDomText(el);
+          if (!text || isPerplexityNoise(text)) continue;
+          if (text.length < 30 || text.length > 3000) continue;
+          const attrs = getPerplexityElementAttrs(el);
+          const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+          const topScore = rect ? Math.max(0, 1000 - Math.abs(rect.top)) : 0;
+          const score = text.length + (/user|human|message/.test(attrs) ? 1000 : 0) + topScore + (isLikelyTruncatedQuestion(text) ? -500 : 0);
+          candidates.push({ text, score });
+        }
+      } catch (e) {}
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.score - a.score);
+      return candidates[0].text;
+    }
+
+    const title = findPerplexityTitle({}, []);
+    if (title && title !== 'Perplexity Conversation' && !isPerplexityNoise(title)) {
+      return title;
+    }
+
+    return '';
+  }
+
+  function buildPerplexityPayload(root, conversationId, extraction) {
+    const messages = extractPerplexityMessagesFromJson(root);
+    return {
+      source: 'perplexity',
+      extraction,
+      conversationId: conversationId || getPerplexityRouteId() || '',
+      title: findPerplexityTitle(root, messages),
+      messages,
+      integrity: {
+        status: messages.length > 0 ? 'probably-complete' : 'incomplete',
+        warnings: extraction === 'network'
+          ? []
+          : ['Perplexity export used fallback extraction because no stable public conversation endpoint is available.']
+      }
+    };
+  }
+
+  function maybeCachePerplexityResponse(requestUrl, response) {
+    try {
+      if (!response || !response.ok) return;
+      const contentType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
+      const looksRelevantUrl = /\/api\/|graphql|thread|conversation|query|search|answer/i.test(requestUrl);
+      const looksJson = contentType.includes('json') || contentType.includes('application/javascript');
+      if (!looksRelevantUrl && !looksJson) return;
+
+      response.clone().json().then(data => {
+        const conversationId = getPerplexityRouteId();
+        const payload = buildPerplexityPayload(data, conversationId, 'network');
+        if (payload.messages.length > 0) {
+          const cacheKey = conversationId || payload.conversationId || PERPLEXITY_LAST_CACHE_KEY;
+          conversationCache[cacheKey] = payload;
+          conversationCache[PERPLEXITY_LAST_CACHE_KEY] = payload;
+        }
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
+  function extractPerplexityHydration(conversationId) {
+    const nextDataEl = document.getElementById('__NEXT_DATA__');
+    if (nextDataEl && nextDataEl.textContent) {
+      try {
+        const data = JSON.parse(nextDataEl.textContent);
+        const payload = buildPerplexityPayload(data, conversationId, 'hydration');
+        if (payload.messages.length > 0) return payload;
+      } catch (e) {}
+    }
+
+    const scripts = Array.from(document.scripts || []).filter(script => {
+      const text = script.textContent || '';
+      return text.includes('query') && (text.includes('answer') || text.includes('perplexity'));
+    });
+
+    for (const script of scripts) {
+      const text = script.textContent || '';
+      const jsonBlocks = text.match(/\{[\s\S]{80,}\}/g) || [];
+      for (const block of jsonBlocks.slice(0, 5)) {
+        try {
+          const data = JSON.parse(block);
+          const payload = buildPerplexityPayload(data, conversationId, 'hydration');
+          if (payload.messages.length > 0) return payload;
+        } catch (e) {}
+      }
+    }
+
+    return null;
+  }
+
+  function isPerplexityNoise(text) {
+    const compact = cleanPerplexityText(text).replace(/\s+/g, ' ').toLowerCase();
+    if (!compact || compact.length < 2) return true;
+    if (compact.length <= 80 && /^(home|discover|spaces|library|sign in|sign up|share|copy|rewrite|sources|related|images|videos|ask follow-up|ask follow up|follow-up|follow up|view sources|new thread|try pro|upgrade)$/.test(compact)) {
+      return true;
+    }
+    return false;
+  }
+
+  function inferPerplexityDomRole(el) {
+    const attrs = [
+      el.getAttribute('data-testid'),
+      el.getAttribute('aria-label'),
+      typeof el.className === 'string' ? el.className : '',
+      el.tagName
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    if (/user|human/.test(attrs)) return 'user';
+    if (/answer|assistant|response|markdown|prose|article/.test(attrs)) return 'assistant';
+    return null;
+  }
+
+  function extractPerplexityFromDom(conversationId) {
+    const root = document.querySelector('main') || document.body;
+    const candidates = [];
+    const sourceLinkMap = collectPerplexitySourceLinkMap();
+    const selectors = [
+      'main [data-testid*="user" i]',
+      'main [data-testid*="human" i]',
+      'main [data-testid*="answer" i]',
+      'main [data-testid*="response" i]',
+      'main article',
+      'main .prose',
+      'main [class*="prose" i]'
+    ];
+
+    for (const selector of selectors) {
+      try {
+        for (const el of document.querySelectorAll(selector)) {
+          if (!(el instanceof HTMLElement)) continue;
+          const role = inferPerplexityDomRole(el);
+          if (!role) continue;
+          const text = role === 'assistant'
+            ? extractPerplexityElementMarkdown(el, sourceLinkMap)
+            : getPerplexityDomText(el);
+          if (isPerplexityNoise(text)) continue;
+          candidates.push({ el, role, text });
+        }
+      } catch (e) {}
+    }
+
+    candidates.sort((a, b) => {
+      if (a.el === b.el) return 0;
+      const pos = a.el.compareDocumentPosition(b.el);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+
+    const messages = [];
+    const seen = new Set();
+    const firstAssistantCandidate = candidates.find(candidate => candidate.role === 'assistant');
+    for (const candidate of candidates) {
+      if (candidate.role === 'user' && firstAssistantCandidate && !isBeforePerplexityElement(candidate.el, firstAssistantCandidate.el)) {
+        continue;
+      }
+      const duplicate = messages.some(msg => (
+        msg.role === candidate.role &&
+        (msg.text === candidate.text || msg.text.includes(candidate.text) || candidate.text.includes(msg.text))
+      ));
+      if (duplicate) continue;
+      pushPerplexityMessage(messages, seen, candidate.role, candidate.text, null, []);
+    }
+
+    const hasUserMessage = messages.some(msg => msg.role === 'user');
+    if (!hasUserMessage) {
+      const visibleQuestion = getPerplexityVisibleQuestion(firstAssistantCandidate ? firstAssistantCandidate.el : null);
+      const duplicatesAssistant = messages.some(msg => msg.role === 'assistant' && msg.text === visibleQuestion);
+      if (visibleQuestion && !duplicatesAssistant) {
+        messages.unshift({
+          id: 'perplexity-user-from-title',
+          role: 'user',
+          text: visibleQuestion,
+          createdAt: null,
+          sources: [],
+          metadata: { extractionHint: 'visible-title' }
+        });
+      }
+    }
+
+    if (messages.length === 0 && root) {
+      const fallbackText = cleanPerplexityText(root.innerText || root.textContent || '');
+      if (!isPerplexityNoise(fallbackText)) {
+        pushPerplexityMessage(messages, seen, 'assistant', fallbackText, null, []);
+      }
+    }
+
+    return {
+      source: 'perplexity',
+      extraction: 'dom',
+      conversationId: conversationId || getPerplexityRouteId() || '',
+      title: findPerplexityTitle({}, messages),
+      messages,
+      integrity: {
+        status: messages.length > 1 ? 'probably-complete' : 'incomplete',
+        warnings: ['Perplexity export used visible DOM fallback. If the exported thread is incomplete, scroll/open the full thread once and export again.']
+      }
+    };
+  }
+
+  async function fetchPerplexityConversation(conversationId) {
+    const cached = conversationCache[conversationId] || conversationCache[PERPLEXITY_LAST_CACHE_KEY];
+    if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
+      return cached;
+    }
+
+    const hydrated = extractPerplexityHydration(conversationId);
+    if (hydrated && hydrated.messages.length > 0) {
+      conversationCache[conversationId] = hydrated;
+      return hydrated;
+    }
+
+    const domPayload = extractPerplexityFromDom(conversationId);
+    if (domPayload.messages.length > 0) {
+      conversationCache[conversationId] = domPayload;
+      return domPayload;
+    }
+
+    throw new Error('Could not extract Perplexity conversation. Please open a thread, wait until it finishes loading, then try again.');
+  }
+
   // Listen for messages from content.js with strict origin validation
   window.addEventListener('message', async (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
@@ -570,7 +1188,9 @@
       const { conversationId, platform, requestId } = message;
 
       // Security Check: Verify conversationId format to prevent path traversal
-      const idPattern = platform === 'gemini' ? /^[a-zA-Z0-9_:-]+$/ : /^[a-f0-9-]+$/;
+      const idPattern = platform === 'gemini'
+        ? /^[a-zA-Z0-9_:-]+$/
+        : (platform === 'perplexity' ? /^[a-zA-Z0-9_%:.~=-]+$/ : /^[a-f0-9-]+$/);
       if (typeof conversationId !== 'string' || !idPattern.test(conversationId)) {
         window.postMessage({
           type: 'OAI_EXPORT_RESPONSE',
@@ -592,6 +1212,8 @@
             data = await fetchClaudeConversation(conversationId);
           } else if (platform === 'gemini') {
             data = await fetchGeminiConversation(conversationId);
+          } else if (platform === 'perplexity') {
+            data = await fetchPerplexityConversation(conversationId);
           } else {
             data = await fetchConversation(conversationId);
           }

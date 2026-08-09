@@ -87,6 +87,7 @@
     const host = window.location.hostname;
     if (host.includes('claude.ai')) return 'claude';
     if (host.includes('gemini.google.com')) return 'gemini';
+    if (host.includes('perplexity.ai')) return 'perplexity';
     return 'chatgpt';
   }
 
@@ -111,6 +112,33 @@
       if (segs[i] === 'gem' && segs[i + 1] && segs[i + 2]) {
         return segs[i + 2];
       }
+      return null;
+    }
+    if (platform === 'perplexity') {
+      const path = window.location.pathname.replace(/\/+$/, '');
+      const segs = path.split('/').filter(Boolean);
+      if (segs.length === 0) return null;
+
+      const threadRouteIndex = segs.findIndex(seg => seg === 'search' || seg === 'page');
+      if (threadRouteIndex >= 0 && segs[threadRouteIndex + 1]) {
+        return segs[threadRouteIndex + 1];
+      }
+
+      const first = segs[0];
+      const unsupportedRoots = new Set([
+        'account', 'api', 'collections', 'discover', 'enterprise',
+        'help', 'hub', 'library', 'login', 'settings', 'spaces'
+      ]);
+
+      // Keep this permissive for Perplexity's changing route names while hiding obvious non-thread pages.
+      if (segs.length === 1 && !unsupportedRoots.has(first)) {
+        return first;
+      }
+
+      if (segs.length > 1 && !unsupportedRoots.has(first)) {
+        return segs[segs.length - 1];
+      }
+
       return null;
     }
     const match = window.location.pathname.match(/\/c\/([a-f0-9-]+)/);
@@ -156,9 +184,20 @@
   function parseContentPart(part) {
     if (typeof part === 'string') return part;
     if (typeof part === 'object' && part !== null) {
+      const contentType = part.content_type || part.type || '';
+      const assetPointer = part.asset_pointer || part.image_asset_pointer || part.file_id || '';
+
       if (part.content_type === 'image') {
-        return `![Generated Image](${part.url || ''})\n\n*Prompt: ${part.prompt || ''}*`;
+        if (part.url) {
+          return `![Generated Image](${part.url})\n\n*Prompt: ${part.prompt || ''}*`;
+        }
+        return part.prompt ? `[Generated image: ${part.prompt}]` : '[Generated image]';
       }
+
+      if (/image|asset_pointer/.test(contentType) || /image|file-service|asset/.test(assetPointer)) {
+        return '[Image attached]';
+      }
+
       if (part.name) {
         return `[Attachment: ${part.name}]`;
       }
@@ -166,9 +205,18 @@
         return `[Citation: ${part.text || 'Reference'}]`;
       }
       // General metadata placeholder instead of dumping JSON.stringify
-      return `[Media Content: ${part.content_type || 'Metadata object'}]`;
+      return contentType ? `[Attachment: ${contentType}]` : '[Attachment]';
     }
     return '';
+  }
+
+  function cleanMediaPlaceholders(text) {
+    if (!text) return '';
+    return text
+      .replace(/\[Media Content:\s*(image_asset_pointer|asset_pointer|image|input_image)\]/gi, '[Image attached]')
+      .replace(/\[Attachment:\s*(image_asset_pointer|asset_pointer|input_image)\]/gi, '[Image attached]')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   // Resolve and clean inline citation unicode tags (e.g. \uE200cite\uE202...)
@@ -277,6 +325,8 @@
         text = message.content.parts.map(part => parseContentPart(part)).join('\n');
       }
 
+      text = cleanMediaPlaceholders(text);
+
       // Handle empty messages running code interpreter
       if (!text.trim() && role === 'assistant' && message.metadata && message.metadata.command) {
         text = message.metadata.command;
@@ -288,6 +338,8 @@
       } else if (text.includes('\uE200')) {
         text = text.replace(/\uE200[^\uE201]*\uE201/g, '').replace(/[\uE200-\uE202]/g, '');
       }
+
+      text = cleanMediaPlaceholders(text);
 
       const contentType = isCode ? 'code' : (role === 'tool' ? 'tool' : 'markdown');
 
@@ -545,31 +597,141 @@
     return result;
   }
 
-  // Format the normalized message model into a clean, presentation-ready Markdown string (Matching standard ChatGPT export style)
-  function convertNormalizedToMarkdown(model) {
-    const platform = getPlatform();
-    let markdown = `# ${model.title}\n\n`;
-    markdown += `- **Source URL:** [Link](${model.url})\n`;
-    markdown += `- **Exported At:** ${new Date(model.exportedAt).toLocaleString()}\n`;
-    markdown += `- **Platform:** ${platform.toUpperCase()}\n`;
-    markdown += `- **Integrity Status:** ${model.integrity ? model.integrity.status : 'complete'}\n`;
-    if (model.integrity && model.integrity.warnings && model.integrity.warnings.length > 0) {
-      markdown += `- **Warnings:**\n`;
-      model.integrity.warnings.forEach(w => {
-        markdown += `  - ${w}\n`;
+  function stripPerplexityCitationLinks(text) {
+    if (!text) return '';
+    return text
+      .replace(/\n\n\*\*Sources:\*\*[\s\S]*$/i, '')
+      .replace(/\s*\(\[[^\]\n]{1,120}\]\((?:https?:\/\/|\/)[^)]+\)\)/g, '')
+      .replace(/\s*\(\[[^\]\n]{1,120}\]\)\((?:https?:\/\/|\/)[^)]+\)/g, '')
+      .replace(/\s*\([a-z0-9][a-z0-9.-]{2,}(?:\s*\+\d+)?\)/gi, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function stripCitationLinksForMarkdown(text) {
+    if (!text) return '';
+    return text
+      // Remove generated source/reference sections.
+      .replace(/\n\n\*\*(Sources|References|Citations):\*\*[\s\S]*$/i, '')
+      // Remove inline citation links in parentheses, e.g. ([source +2](https://...)).
+      .replace(/\s*\(\[[^\]\n]{1,120}\]\((?:https?:\/\/|\/)[^)]+\)\)/g, '')
+      // Remove malformed split citation links from pasted rich text, e.g. ([source])(https://...).
+      .replace(/\s*\(\[[^\]\n]{1,120}\]\)\((?:https?:\/\/|\/)[^)]+\)/g, '')
+      // Remove Perplexity-style unresolved source pills, e.g. (terralogic +2).
+      .replace(/\s*\([a-z0-9][a-z0-9.-]{2,}(?:\s*\+\d+)?\)/gi, '')
+      // Convert remaining ordinary Markdown links to readable labels instead of URLs.
+      .replace(/\[([^\]\n]{1,160})\]\((?:https?:\/\/|\/)[^)]+\)/g, '$1')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  // Normalize Perplexity's extracted thread data into the standardized internal model
+  function normalizePerplexityConversation(payload, conversationId, includeCitationLinks = true) {
+    const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
+    const result = {
+      conversationId: conversationId,
+      title: payload.title || 'Perplexity Conversation',
+      url: window.location.href,
+      exportedAt: new Date().toISOString(),
+      source: payload.extraction || 'network-or-dom',
+      messages: [],
+      raw: payload,
+      integrity: payload.integrity || {
+        status: rawMessages.length > 0 ? 'probably-complete' : 'incomplete',
+        warnings: rawMessages.length > 0 ? [] : ['No Perplexity messages were extracted.']
+      }
+    };
+
+    let messageIndex = 0;
+    for (const msg of rawMessages) {
+      if (!msg || !msg.text || !msg.text.trim()) continue;
+      const role = msg.role === 'user' ? 'user' : 'assistant';
+      let text = includeCitationLinks ? msg.text.trim() : stripPerplexityCitationLinks(msg.text);
+      if (!text.trim()) continue;
+
+      if (includeCitationLinks && role === 'assistant' && Array.isArray(msg.sources) && msg.sources.length > 0) {
+        const sourceLines = msg.sources
+          .filter(source => source && source.url)
+          .map((source, i) => {
+            const label = source.title || source.name || source.url;
+            return `${i + 1}. [${label}](${source.url})`;
+          });
+        if (sourceLines.length > 0) {
+          text += `\n\n**Sources:**\n${sourceLines.join('\n')}`;
+        }
+      }
+
+      result.messages.push({
+        id: msg.id || `perplexity-msg-${messageIndex}`,
+        parentId: null,
+        index: messageIndex++,
+        role,
+        createdAt: msg.createdAt || null,
+        content: [
+          {
+            type: 'markdown',
+            text,
+            metadata: msg.metadata || {}
+          }
+        ],
+        raw: msg
       });
     }
-    markdown += `\n---\n\n`;
+
+    if (result.messages.length === 0) {
+      result.integrity.status = 'incomplete';
+      result.integrity.warnings = result.integrity.warnings || [];
+      result.integrity.warnings.push('No valid Perplexity user or assistant messages resolved.');
+    } else if (result.integrity.status === 'complete' && payload.extraction === 'dom') {
+      result.integrity.status = 'probably-complete';
+      result.integrity.warnings = result.integrity.warnings || [];
+      result.integrity.warnings.push('Perplexity export used DOM fallback because no complete internal payload was available. Very long virtualized threads may require opening the full thread first.');
+    }
+
+    return result;
+  }
+
+  // Format the normalized message model into a clean, presentation-ready Markdown string (Matching standard ChatGPT export style)
+  function convertNormalizedToMarkdown(model, options = {}) {
+    const includeCitationLinks = options.includeCitationLinks !== false;
+    const includeMetadata = options.includeMetadata !== false;
+    const assistantRepliesOnly = options.assistantRepliesOnly === true;
+    const platform = getPlatform();
+    let markdown = `# ${model.title}\n\n`;
+
+    if (includeMetadata) {
+      markdown += `- **Source URL:** [Link](${model.url})\n`;
+      markdown += `- **Exported At:** ${new Date(model.exportedAt).toLocaleString()}\n`;
+      markdown += `- **Platform:** ${platform.toUpperCase()}\n`;
+
+      const integrityStatus = model.integrity ? model.integrity.status : 'complete';
+      const warnings = model.integrity && Array.isArray(model.integrity.warnings) ? model.integrity.warnings : [];
+      if (integrityStatus && integrityStatus !== 'complete') {
+        markdown += `- **Integrity Status:** ${integrityStatus}\n`;
+      }
+      if (warnings.length > 0) {
+        markdown += `- **Warnings:**\n`;
+        warnings.forEach(w => {
+          markdown += `  - ${w}\n`;
+        });
+      }
+      markdown += `\n---\n\n`;
+    } else {
+      markdown += `\n`;
+    }
 
     let lastAuthor = null;
 
     for (const msg of model.messages) {
       const role = msg.role;
       const contentItem = msg.content[0] || { text: '', type: 'markdown' };
-      const text = contentItem.text.trim();
+      const text = includeCitationLinks ? contentItem.text.trim() : stripCitationLinksForMarkdown(contentItem.text);
 
       // Skip empty messages or system messages
       if (!text || role === 'system') continue;
+      if (assistantRepliesOnly && role !== 'assistant') continue;
 
       // Handle tool / code interpreter output
       if (role === 'tool') {
@@ -583,6 +745,8 @@
         assistantName = 'Claude';
       } else if (platform === 'gemini') {
         assistantName = 'Gemini';
+      } else if (platform === 'perplexity') {
+        assistantName = 'Perplexity';
       } else {
         assistantName = 'ChatGPT';
       }
@@ -647,18 +811,29 @@
       
       const includeThinkingCheckbox = document.getElementById('oai-exporter-include-thinking');
       const includeThinking = includeThinkingCheckbox ? includeThinkingCheckbox.checked : false;
+      const includeCitationsCheckbox = document.getElementById('oai-exporter-include-citations');
+      const includeCitationLinks = includeCitationsCheckbox ? includeCitationsCheckbox.checked : true;
+      const includeMetadata = true;
+      const assistantOnlyCheckbox = document.getElementById('oai-exporter-assistant-only');
+      const assistantRepliesOnly = assistantOnlyCheckbox ? assistantOnlyCheckbox.checked : false;
 
       let model;
       if (platform === 'claude') {
         model = normalizeClaudeConversation(rawData, conversationId, includeThinking);
       } else if (platform === 'gemini') {
         model = normalizeGeminiConversation(rawData, conversationId, includeThinking);
+      } else if (platform === 'perplexity') {
+        model = normalizePerplexityConversation(rawData, conversationId, includeCitationLinks);
       } else {
         model = normalizeConversation(rawData);
       }
       
       if (format === 'markdown') {
-        const markdown = convertNormalizedToMarkdown(model);
+        const markdown = convertNormalizedToMarkdown(model, {
+          includeCitationLinks,
+          includeMetadata,
+          assistantRepliesOnly
+        });
         if (action === 'download') {
           const filename = `${sanitizeFilename(model.title)}_${new Date().toISOString().slice(0, 10)}.md`;
           triggerDownload(markdown, filename, 'text/markdown;charset=utf-8');
@@ -723,6 +898,14 @@
           <label class="oai-exporter-checkbox-label">
             <input type="checkbox" id="oai-exporter-include-thinking" />
             <span>Include Thinking Process</span>
+          </label>
+          <label class="oai-exporter-checkbox-label">
+            <input type="checkbox" id="oai-exporter-include-citations" checked />
+            <span>Include Citation Links</span>
+          </label>
+          <label class="oai-exporter-checkbox-label">
+            <input type="checkbox" id="oai-exporter-assistant-only" />
+            <span>Assistant Replies Only</span>
           </label>
         </div>
         
@@ -802,6 +985,11 @@
     }
   }, 800);
 
-  // Initial check on load
-  updateUIState();
+  // The content script starts before the page DOM so the network interceptor can attach early.
+  // Defer only the initial UI check until the body is available.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', updateUIState, { once: true });
+  } else {
+    updateUIState();
+  }
 })();
