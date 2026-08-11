@@ -91,17 +91,172 @@
     return 'chatgpt';
   }
 
-  // Get active conversation ID from the URL pathname
+  const temporaryChatConfig = {
+    chatgpt: {
+      queryFlags: ['temporary-chat'],
+      modePattern: /\btemporary\s+chat\b/i,
+      idPattern: /^[a-f0-9-]+$/i
+    },
+    claude: {
+      queryFlags: ['incognito'],
+      modePattern: /\bincognito(?:\s+chat)?\b/i,
+      idPattern: /^[a-f0-9-]+$/i
+    },
+    gemini: {
+      queryFlags: ['temporary-chat'],
+      modePattern: /\btemporary\s+chat\b|\bask\s+in\s+a\s+temporary\s+chat\b/i,
+      idPattern: /^[a-zA-Z0-9_:-]+$/
+    },
+    perplexity: {
+      queryFlags: ['incognito', 'temporary'],
+      modePattern: /\bincognito(?:\s+mode)?\b|\btemporary\s+thread\b/i,
+      idPattern: /^[a-zA-Z0-9_%:.~=-]+$/
+    }
+  };
+
+  const temporaryRoutePatterns = {
+    claude: /\/chat\/([a-f0-9-]+)/i,
+    gemini: [
+      /\/app\/([a-zA-Z0-9_:-]+)/i,
+      /\/gem\/[^/?#]+\/([a-zA-Z0-9_:-]+)/i
+    ],
+    perplexity: [
+      /\/(?:search|page)\/([a-zA-Z0-9_%:.~=-]+)/i
+    ]
+  };
+
+  const inactiveTemporaryModeHints = {
+    claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b/i,
+    gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b/i,
+    perplexity: /\b(?:enable|turn\s+on|start)\b.{0,40}\bincognito\b/i
+  };
+
+  const temporaryModeSelectors = [
+    '[aria-label*="incognito" i]',
+    '[aria-label*="temporary" i]',
+    '[data-testid*="incognito" i]',
+    '[data-testid*="temporary" i]',
+    '[data-test-id*="incognito" i]',
+    '[data-test-id*="temp" i]',
+    '[data-tooltip*="incognito" i]',
+    '[data-tooltip*="temporary" i]',
+    '[title*="incognito" i]',
+    '[title*="temporary" i]',
+    '[placeholder*="temporary" i]',
+    '[class*="incognito" i]',
+    '[class*="temporary" i]',
+    '[role="status"]',
+    '[role="banner"]',
+    'header',
+    'main h1',
+    'main h2',
+    'button'
+  ].join(', ');
+
+  const temporaryConversationSelectors = [
+    '[data-conversation-id]',
+    '[data-chat-id]',
+    '[data-thread-id]',
+    '[aria-label*="chat-" i]',
+    '[href*="/chat/"]',
+    '[href*="/app/"]',
+    '[href*="/gem/"]',
+    '[href*="/search/"]',
+    '[href*="/page/"]'
+  ].join(', ');
+
+  function hasQueryFlag(names) {
+    const search = window.location.search || '';
+    return names.some(name => new RegExp(`(?:\\?|&)${name}(?:=true)?(?:&|$)`, 'i').test(search));
+  }
+
+  function getElementAttributeText(element) {
+    const attributes = [
+      'aria-label', 'data-testid', 'data-test-id', 'data-tooltip',
+      'title', 'placeholder'
+    ];
+    return [
+      element.textContent,
+      typeof element.className === 'string' ? element.className : '',
+      ...attributes.map(name => element.getAttribute(name))
+    ].filter(value => typeof value === 'string').join(' ');
+  }
+
+  function isActiveTemporaryModeElement(element, platform, pattern) {
+    const text = getElementAttributeText(element);
+    if (!pattern.test(text)) return false;
+
+    const tagName = typeof element.tagName === 'string' ? element.tagName.toLowerCase() : '';
+    const role = element.getAttribute('role');
+    if (tagName === 'button' || role === 'button') {
+      const state = [
+        element.getAttribute('aria-pressed'),
+        element.getAttribute('aria-current'),
+        element.getAttribute('data-state'),
+        element.getAttribute('data-active'),
+        typeof element.className === 'string' ? element.className : ''
+      ].filter(value => typeof value === 'string').join(' ');
+      return /(?:true|active|selected|enabled|on)/i.test(state);
+    }
+
+    const inactiveHint = inactiveTemporaryModeHints[platform];
+    return !(inactiveHint && inactiveHint.test(text));
+  }
+
+  function isTemporaryChat(platform = getPlatform()) {
+    const config = temporaryChatConfig[platform];
+    if (!config) return false;
+    if (hasQueryFlag(config.queryFlags)) return true;
+
+    return Array.from(document.querySelectorAll(temporaryModeSelectors))
+      .some(element => isActiveTemporaryModeElement(element, platform, config.modePattern));
+  }
+
+  function extractConversationId(value, platform = getPlatform()) {
+    if (typeof value !== 'string') return null;
+
+    const text = value.trim();
+    const prefixedMatch = text.match(/\bchat-([a-f0-9-]+)\b/i);
+    if (prefixedMatch) return prefixedMatch[1];
+
+    const patterns = temporaryRoutePatterns[platform];
+    for (const pattern of (Array.isArray(patterns) ? patterns : [patterns])) {
+      const routeMatch = pattern && text.match(pattern);
+      if (routeMatch) return routeMatch[1];
+    }
+
+    const directPattern = (temporaryChatConfig[platform] || temporaryChatConfig.chatgpt).idPattern;
+    return directPattern.test(text) ? text : null;
+  }
+
+  function getTemporaryConversationId(platform = getPlatform()) {
+    const elements = document.querySelectorAll(temporaryConversationSelectors);
+    const attributes = [
+      'data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label', 'href'
+    ];
+    for (const element of elements) {
+      for (const attribute of attributes) {
+        const id = extractConversationId(element.getAttribute(attribute), platform);
+        if (id) return id;
+      }
+    }
+    return null;
+  }
+
+  // Get the active conversation ID from the route or temporary-chat DOM state
   function getActiveConversationId() {
     const platform = getPlatform();
     if (platform === 'claude') {
       const match = window.location.pathname.match(/\/chat\/([a-f0-9-]+)/);
-      return match ? match[1] : null;
+      if (match) return match[1];
+      return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
     }
     if (platform === 'gemini') {
       const path = window.location.pathname.replace(/\/+$/, '');
       const segs = path.split('/').filter(Boolean);
-      if (segs.length === 0) return null;
+      if (segs.length === 0) {
+        return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
+      }
       let i = 0;
       if (segs[0] === 'u' && /^\d+$/.test(segs[1] || '')) {
         i = 2;
@@ -112,12 +267,14 @@
       if (segs[i] === 'gem' && segs[i + 1] && segs[i + 2]) {
         return segs[i + 2];
       }
-      return null;
+      return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
     }
     if (platform === 'perplexity') {
       const path = window.location.pathname.replace(/\/+$/, '');
       const segs = path.split('/').filter(Boolean);
-      if (segs.length === 0) return null;
+      if (segs.length === 0) {
+        return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
+      }
 
       const threadRouteIndex = segs.findIndex(seg => seg === 'search' || seg === 'page');
       if (threadRouteIndex >= 0 && segs[threadRouteIndex + 1]) {
@@ -139,10 +296,11 @@
         return segs[segs.length - 1];
       }
 
-      return null;
+      return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
     }
     const match = window.location.pathname.match(/\/c\/([a-f0-9-]+)/);
-    return match ? match[1] : null;
+    if (match) return match[1];
+    return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
   }
 
   // Sanitize filename for downloading
@@ -977,10 +1135,27 @@
 
   // Performance-friendly URL polling replacing heavy MutationObserver (Issue 6)
   let lastUrl = location.href;
+  let lastTemporaryChat = false;
+  let lastTemporaryConversationId = null;
   setInterval(() => {
     const url = location.href;
-    if (url !== lastUrl) {
+    const platform = getPlatform();
+    const shouldCheckTemporaryChat =
+      url !== lastUrl ||
+      lastTemporaryChat ||
+      !document.getElementById('oai-exporter-container');
+    const temporaryChat = shouldCheckTemporaryChat && isTemporaryChat(platform);
+    const temporaryConversationId = temporaryChat
+      ? getTemporaryConversationId(platform)
+      : null;
+    if (
+      url !== lastUrl ||
+      temporaryChat !== lastTemporaryChat ||
+      temporaryConversationId !== lastTemporaryConversationId
+    ) {
       lastUrl = url;
+      lastTemporaryChat = temporaryChat;
+      lastTemporaryConversationId = temporaryConversationId;
       updateUIState();
     }
   }, 800);
