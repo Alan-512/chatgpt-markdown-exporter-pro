@@ -10,6 +10,11 @@
   const PERPLEXITY_RELEVANT_URL_PATTERN = /\/api\/|graphql|thread|conversation|query|search|answer/i;
   const PERPLEXITY_CONVERSATION_ID_PATTERN = /["'](?:threadId|thread_id|conversationId|conversation_id)["']\s*:\s*["']([a-zA-Z0-9_%:.~=-]+)["']/gi;
   const GEMINI_BATCH_URL_PATTERN = /\/_\/BardChatUi\/data\/batchexecute(?:[?/#]|$)/i;
+  const GEMINI_STREAM_URL_PATTERN = /\/_\/BardChatUi\/data\/assistant\.lamda\.BardFrontendService\/StreamGenerate(?:[?/#]|$)/i;
+  const GEMINI_CONVERSATION_URL_PATTERN = new RegExp(
+    `(?:${GEMINI_BATCH_URL_PATTERN.source}|${GEMINI_STREAM_URL_PATTERN.source})`,
+    'i'
+  );
   const GEMINI_CONVERSATION_ID_PATTERN = /\bc_[a-zA-Z0-9_-]{8,}\b/g;
   const emittedConversationIds = new Set();
   let capturedToken = null;
@@ -135,7 +140,7 @@
   }
 
   function observeGeminiConversationResponse(requestUrl, response) {
-    if (!GEMINI_BATCH_URL_PATTERN.test(requestUrl) || isGeminiChatListRequest(requestUrl)) return;
+    if (!GEMINI_CONVERSATION_URL_PATTERN.test(requestUrl) || isGeminiChatListRequest(requestUrl)) return;
 
     try {
       response.clone().text().then(emitGeminiConversationIds).catch(() => {});
@@ -148,7 +153,7 @@
     if (
       requestMethod === 'GET' ||
       typeof body !== 'string' ||
-      !GEMINI_BATCH_URL_PATTERN.test(requestUrl) ||
+      !GEMINI_CONVERSATION_URL_PATTERN.test(requestUrl) ||
       isGeminiChatListRequest(requestUrl)
     ) {
       return;
@@ -187,7 +192,7 @@
     const requestHeaders = options.headers || request?.headers;
     const isBackendRequest = typeof requestUrl === 'string' && /\/backend-api\//i.test(requestUrl);
     const isClaudeRequest = typeof requestUrl === 'string' && CLAUDE_CONVERSATION_URL_PATTERN.test(requestUrl);
-    const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_BATCH_URL_PATTERN.test(requestUrl);
+    const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_CONVERSATION_URL_PATTERN.test(requestUrl);
     const isPerplexityRequest = isPerplexityHost() &&
       typeof requestUrl === 'string' &&
       PERPLEXITY_RELEVANT_URL_PATTERN.test(requestUrl);

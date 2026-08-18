@@ -238,6 +238,44 @@ test('emits a Gemini conversation ID from a batchexecute response', async () => 
   assert.equal(messages[0].token, TOKEN);
 });
 
+test('emits a Gemini conversation ID from a StreamGenerate response', async () => {
+  const messages = [];
+  const response = createResponse(
+    `[["wrb.fr","StreamGenerate","[[null,[\"${GEMINI_CONVERSATION_ID}\"]]]",null,null,null,"generic"]]`
+  );
+  const window = {
+    location: {
+      hostname: 'gemini.google.com',
+      origin: 'https://gemini.google.com'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch('/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?source-path=%2Fapp', {
+    method: 'POST',
+    body: 'f.req=test'
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].conversationId, GEMINI_CONVERSATION_ID);
+  assert.equal(messages[0].platform, 'gemini');
+});
+
 test('does not use the first Gemini sidebar conversation as the active chat ID', async () => {
   const messages = [];
   const response = createResponse(
