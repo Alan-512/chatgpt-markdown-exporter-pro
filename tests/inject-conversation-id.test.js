@@ -12,6 +12,7 @@ const injectScript = fs.readFileSync(
 const TOKEN = 'test-token';
 const CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const GEMINI_CONVERSATION_ID = 'c_77ab2f6b9faa3039';
+const GEMINI_DOM_FALLBACK_ID = '__gemini_temp_dom__';
 
 function createResponse(body) {
   return {
@@ -310,6 +311,84 @@ test('does not use the first Gemini sidebar conversation as the active chat ID',
   await new Promise(resolve => setTimeout(resolve, 0));
 
   assert.equal(messages.length, 0);
+});
+
+test('exports the current Gemini temporary DOM when no conversation ID exists', async () => {
+  const messages = [];
+  let messageHandler = null;
+  const userNode = {
+    tagName: 'USER-QUERY',
+    textContent: 'hi',
+    getAttribute(name) {
+      return name === 'data-message-author-role' ? 'user' : null;
+    },
+    contains() { return false; },
+    compareDocumentPosition() { return 4; }
+  };
+  const assistantNode = {
+    tagName: 'MODEL-RESPONSE',
+    textContent: 'Hello! How can I help you today?',
+    getAttribute(name) {
+      return name === 'data-message-author-role' ? 'assistant' : null;
+    },
+    contains() { return false; },
+    compareDocumentPosition() { return 2; }
+  };
+  const document = {
+    currentScript: { dataset: { token: TOKEN } },
+    title: 'Gemini',
+    querySelectorAll(selector) {
+      if (selector.includes('user-query')) return [userNode];
+      if (selector.includes('model-response')) return [assistantNode];
+      return [];
+    }
+  };
+  const window = {
+    location: {
+      hostname: 'gemini.google.com',
+      pathname: '/app',
+      origin: 'https://gemini.google.com'
+    },
+    fetch: async () => ({ ok: false }),
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener(type, callback) {
+      if (type === 'message') messageHandler = callback;
+    }
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document,
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await messageHandler({
+    source: window,
+    origin: window.location.origin,
+    data: {
+      type: 'OAI_EXPORT_REQUEST',
+      conversationId: GEMINI_DOM_FALLBACK_ID,
+      platform: 'gemini',
+      requestId: 'dom-request',
+      token: TOKEN
+    }
+  });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, true);
+  assert.equal(messages[0].data.extraction, 'dom');
+  assert.equal(JSON.stringify(messages[0].data.blocks), JSON.stringify([{
+    userText: 'hi',
+    assistantText: 'Hello! How can I help you today?',
+    thoughtsText: null,
+    tsPair: null
+  }]));
 });
 
 test('emits a Claude conversation ID from a conversation API request', async () => {

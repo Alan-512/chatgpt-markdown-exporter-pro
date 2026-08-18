@@ -24,6 +24,7 @@
   let pendingTemporaryConversationId = null;
   let pendingTemporaryConversationUrl = null;
   let pendingTemporaryConversationAt = 0;
+  const GEMINI_DOM_FALLBACK_ID = '__gemini_temp_dom__';
 
   // Active requests transaction map (prevents promise collisions and SPA race conditions)
   const pendingRequests = {};
@@ -286,6 +287,32 @@
     return directPattern.test(text) ? text : null;
   }
 
+  function hasGeminiMainMessages() {
+    const userSelector = [
+      'main user-query',
+      'user-query',
+      'main [data-message-author-role="user"]',
+      '[data-message-author-role="user"]',
+      'main [data-testid*="user-message" i]'
+    ].join(', ');
+    const assistantSelector = [
+      'main model-response',
+      'model-response',
+      'main [data-message-author-role="assistant"]',
+      '[data-message-author-role="assistant"]',
+      'main [data-testid*="model-response" i]',
+      'main [data-testid*="assistant-message" i]',
+      'main [data-testid*="response" i]'
+    ].join(', ');
+
+    try {
+      return document.querySelectorAll(userSelector).length > 0 &&
+        document.querySelectorAll(assistantSelector).length > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function getTemporaryConversationId(platform = getPlatform()) {
     const searchParams = new URL(window.location.href).searchParams;
     for (const queryKey of [
@@ -327,6 +354,15 @@
         const id = extractConversationId(element.getAttribute(attribute), platform);
         if (id) return id;
       }
+    }
+
+    // Gemini temporary chats can have fully rendered messages while keeping
+    // the route at /app and exposing no stable ID in the DOM. Use a sentinel
+    // only when both user and assistant message nodes are present in the page;
+    // inject.js then exports those current-page nodes instead of guessing from
+    // sidebar links.
+    if (platform === 'gemini' && hasGeminiMainMessages()) {
+      return GEMINI_DOM_FALLBACK_ID;
     }
 
     return null;
@@ -785,17 +821,20 @@
 
   // Normalize Gemini's batchexecute blocks into the standardized internal model
   function normalizeGeminiConversation(payload, chatId, includeThinking = false) {
+    const domFallback = payload.extraction === 'dom';
     const result = {
       conversationId: chatId,
       title: payload.title || 'Gemini Conversation',
       url: window.location.href,
       exportedAt: new Date().toISOString(),
-      source: 'network',
+      source: domFallback ? 'dom' : 'network',
       messages: [],
       raw: payload,
       integrity: {
-        status: 'complete',
-        warnings: []
+        status: domFallback ? 'probably-complete' : 'complete',
+        warnings: Array.isArray(payload.integrity?.warnings)
+          ? payload.integrity.warnings
+          : []
       }
     };
 

@@ -16,6 +16,7 @@
     'i'
   );
   const GEMINI_CONVERSATION_ID_PATTERN = /\bc_[a-zA-Z0-9_-]{8,}\b/g;
+  const GEMINI_DOM_FALLBACK_ID = '__gemini_temp_dom__';
   const emittedConversationIds = new Set();
   let capturedToken = null;
 
@@ -730,7 +731,156 @@
     return withIndex.map(({ _i, ...rest }) => rest);
   }
 
+  function cleanGeminiDomText(value) {
+    return typeof value === 'string'
+      ? value.replace(/\u0000/g, '').replace(/\r\n/g, '\n').trim()
+      : '';
+  }
+
+  function getGeminiDomAttribute(node, name) {
+    try {
+      return node && typeof node.getAttribute === 'function'
+        ? (node.getAttribute(name) || '')
+        : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function inferGeminiDomRole(node) {
+    const tagName = typeof node?.tagName === 'string' ? node.tagName.toLowerCase() : '';
+    const role = getGeminiDomAttribute(node, 'data-message-author-role') ||
+      getGeminiDomAttribute(node, 'role');
+    if (/^(?:user|human)$/i.test(role)) return 'user';
+    if (/^(?:assistant|model)$/i.test(role)) return 'assistant';
+
+    const descriptor = [
+      tagName,
+      getGeminiDomAttribute(node, 'data-testid'),
+      getGeminiDomAttribute(node, 'aria-label'),
+      typeof node?.className === 'string' ? node.className : ''
+    ].join(' ').toLowerCase();
+    if (/user-query|\buser\b|\bhuman\b|\bquery\b/.test(descriptor)) return 'user';
+    if (/model-response|\bassistant\b|\bmodel\b|\bresponse\b/.test(descriptor)) return 'assistant';
+    return null;
+  }
+
+  function getGeminiDomText(node) {
+    let source = node;
+    try {
+      const clone = typeof node?.cloneNode === 'function' ? node.cloneNode(true) : null;
+      if (clone && typeof clone.querySelectorAll === 'function') {
+        for (const noisy of clone.querySelectorAll(
+          'button, svg, img, mat-icon, tool-bar, [aria-label*="copy" i], [aria-label*="regenerate" i]'
+        )) {
+          noisy.remove?.();
+        }
+        source = clone;
+      }
+    } catch (e) {}
+
+    return cleanGeminiDomText(source?.innerText || source?.textContent || '');
+  }
+
+  function collectGeminiDomMessages() {
+    const selectors = [
+      'main user-query',
+      'user-query',
+      'main model-response',
+      'model-response',
+      'main message-content',
+      'message-content',
+      'main [data-message-author-role="user"]',
+      'main [data-message-author-role="assistant"]',
+      'main [data-testid*="user-message" i]',
+      'main [data-testid*="model-response" i]',
+      'main [data-testid*="assistant-message" i]',
+      'main [data-testid*="response" i]'
+    ];
+    const candidates = [];
+    const seen = new Set();
+
+    for (const selector of selectors) {
+      let nodes = [];
+      try {
+        nodes = Array.from(document.querySelectorAll(selector));
+      } catch (e) {}
+
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        const role = inferGeminiDomRole(node);
+        const text = getGeminiDomText(node);
+        if (!role || !text) continue;
+
+        if (candidates.some(candidate => candidate.node.contains?.(node))) continue;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          if (node.contains?.(candidates[i].node)) candidates.splice(i, 1);
+        }
+        seen.add(node);
+        candidates.push({ node, role, text });
+      }
+    }
+
+    candidates.sort((a, b) => {
+      if (typeof a.node.compareDocumentPosition !== 'function') return 0;
+      const position = a.node.compareDocumentPosition(b.node);
+      if (position & 4) return -1;
+      if (position & 2) return 1;
+      return 0;
+    });
+    return candidates;
+  }
+
+  function extractGeminiDomConversation() {
+    const messages = collectGeminiDomMessages();
+    const blocks = [];
+    let pendingUser = null;
+
+    for (const message of messages) {
+      if (message.role === 'user') {
+        pendingUser = message.text;
+      } else if (message.role === 'assistant' && pendingUser) {
+        blocks.push({
+          userText: pendingUser,
+          assistantText: message.text,
+          thoughtsText: null,
+          tsPair: null
+        });
+        pendingUser = null;
+      }
+    }
+
+    if (pendingUser && blocks.length === 0) {
+      blocks.push({
+        userText: pendingUser,
+        assistantText: '',
+        thoughtsText: null,
+        tsPair: null
+      });
+    }
+    if (!blocks.length) {
+      throw new Error('Could not extract Gemini messages from the current page.');
+    }
+
+    const title = cleanGeminiDomText(document.title || '').replace(/\s*-\s*Gemini\s*$/i, '') ||
+      'Gemini Temporary Chat';
+    return {
+      source: 'gemini',
+      extraction: 'dom',
+      title,
+      blocks,
+      integrity: {
+        status: 'probably-complete',
+        warnings: ['Gemini conversation ID was unavailable; export used the current page messages. Scroll through the full chat before exporting if the thread is virtualized.']
+      }
+    };
+  }
+
   async function fetchGeminiConversation(chatId) {
+    if (chatId === GEMINI_DOM_FALLBACK_ID) {
+      return extractGeminiDomConversation();
+    }
+
     const route = getRouteFromUrl();
     if (!route) {
       throw new Error('Could not resolve Gemini route. Are you on a conversation page?');
