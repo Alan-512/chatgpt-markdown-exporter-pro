@@ -296,10 +296,10 @@
       if (id) return id;
     }
 
-    // Network interception is the source of truth for a temporary Gemini
-    // chat. Its sidebar still contains links for ordinary conversations, so
-    // treating the first /app/<id> link as the active chat exports the wrong
-    // conversation.
+    // Network interception is the source of truth when a provider keeps the
+    // temporary chat on a new-chat route. Its sidebar still contains links for
+    // ordinary conversations, so treating the first route link as active can
+    // export the wrong conversation.
     if (observedTemporaryConversationId) return observedTemporaryConversationId;
     if (
       pendingTemporaryConversationId &&
@@ -313,14 +313,14 @@
       return observedTemporaryConversationId;
     }
 
-    const isGemini = platform === 'gemini';
+    const usesCurrentPageSelectors = ['claude', 'gemini', 'perplexity'].includes(platform);
     const elements = document.querySelectorAll(
-      isGemini
-        ? '[data-conversation-id], main [data-chat-id], main [data-thread-id]'
+      usesCurrentPageSelectors
+        ? 'main [data-conversation-id], main [data-chat-id], main [data-thread-id], main [aria-label*="chat-" i]'
         : temporaryConversationSelectors
     );
-    const attributes = isGemini
-      ? ['data-conversation-id', 'data-chat-id', 'data-thread-id']
+    const attributes = usesCurrentPageSelectors
+      ? ['data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label']
       : ['data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label', 'href'];
     for (const element of elements) {
       for (const attribute of attributes) {
