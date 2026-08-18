@@ -5,17 +5,25 @@
   const CHATGPT_CONVERSATION_ID_PATTERN = /(?:["'](?:conversation_id|conversationId)["']\s*:\s*["']|(?:^|[?&\s])(?:conversation_id|conversationId)=)([a-f0-9-]+)/gi;
   const CHATGPT_CONVERSATION_URL_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation(?:[\/?#]|$)/i;
   const CHATGPT_CONVERSATION_ROUTE_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation\/([a-f0-9-]+)(?:[\/?#]|$)/i;
+  const GEMINI_BATCH_URL_PATTERN = /\/_\/BardChatUi\/data\/batchexecute(?:[?/#]|$)/i;
+  const GEMINI_CONVERSATION_ID_PATTERN = /\bc_[a-zA-Z0-9_-]{8,}\b/g;
   const emittedConversationIds = new Set();
   let capturedToken = null;
 
-  function emitConversationId(conversationId) {
-    if (typeof conversationId !== 'string' || !/^[a-f0-9-]+$/i.test(conversationId)) return;
-    if (emittedConversationIds.has(conversationId)) return;
-    emittedConversationIds.add(conversationId);
+  function emitConversationId(conversationId, platform = 'chatgpt') {
+    const idPattern = platform === 'gemini'
+      ? /^c_[a-zA-Z0-9_-]{8,}$/
+      : /^[a-f0-9-]+$/i;
+    if (typeof conversationId !== 'string' || !idPattern.test(conversationId)) return;
+
+    const cacheKey = `${platform}:${conversationId}`;
+    if (emittedConversationIds.has(cacheKey)) return;
+    emittedConversationIds.add(cacheKey);
 
     window.postMessage({
       type: 'OAI_CONVERSATION_ID',
       conversationId,
+      platform,
       token: secureToken
     }, window.location.origin);
   }
@@ -60,6 +68,40 @@
     emitConversationIds(body);
   }
 
+  function emitGeminiConversationIds(text) {
+    if (typeof text !== 'string') return;
+
+    const normalizedText = text.replace(/\\"/g, '"');
+    const conversationIds = new Set();
+    let match;
+    while ((match = GEMINI_CONVERSATION_ID_PATTERN.exec(normalizedText))) {
+      conversationIds.add(match[0]);
+    }
+    GEMINI_CONVERSATION_ID_PATTERN.lastIndex = 0;
+
+    for (const conversationId of conversationIds) {
+      emitConversationId(conversationId, 'gemini');
+    }
+  }
+
+  function observeGeminiConversationResponse(requestUrl, response) {
+    if (!GEMINI_BATCH_URL_PATTERN.test(requestUrl)) return;
+
+    try {
+      response.clone().text().then(emitGeminiConversationIds).catch(() => {});
+    } catch (e) {
+      // Some response types cannot be cloned; the page request must still complete.
+    }
+  }
+
+  function observeGeminiConversationRequest(requestUrl, requestMethod, body) {
+    if (requestMethod === 'GET' || typeof body !== 'string' || !GEMINI_BATCH_URL_PATTERN.test(requestUrl)) {
+      return;
+    }
+
+    emitGeminiConversationIds(body);
+  }
+
   // Intercept fetch requests
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
@@ -75,20 +117,25 @@
     const options = args[1] || {};
     const requestMethod = (options.method || request?.method || 'GET').toUpperCase();
     const requestHeaders = options.headers || request?.headers;
+    const isBackendRequest = typeof requestUrl === 'string' && /\/backend-api\//i.test(requestUrl);
+    const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_BATCH_URL_PATTERN.test(requestUrl);
 
-    if (typeof requestUrl === 'string') {
+    if (isBackendRequest) {
       observeChatGPTConversationRequest(requestUrl, requestMethod, options.body);
     }
+    if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, options.body);
     if (
       request &&
       typeof request.clone === 'function' &&
       typeof requestUrl === 'string' &&
       requestMethod !== 'GET' &&
-      /\/backend-api\//i.test(requestUrl)
+      (isBackendRequest || isGeminiRequest)
     ) {
       try {
-        request.clone().text()
-          .then(body => observeChatGPTConversationRequest(requestUrl, requestMethod, body))
+        request.clone().text().then(body => {
+          if (isBackendRequest) observeChatGPTConversationRequest(requestUrl, requestMethod, body);
+          if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, body);
+        })
           .catch(() => {});
       } catch (e) {
         // Some Request bodies cannot be cloned; the page request must still complete.
@@ -120,6 +167,7 @@
     // 2. Intercept and cache conversation JSON responses
     if (typeof requestUrl === 'string') {
       observeChatGPTConversationResponse(requestUrl, requestMethod, response);
+      observeGeminiConversationResponse(requestUrl, response);
     }
     if (requestMethod === 'GET' && typeof requestUrl === 'string') {
       if (CHATGPT_CONVERSATION_ROUTE_PATTERN.test(requestUrl)) {
@@ -259,7 +307,15 @@
     const path = window.location.pathname.replace(/\/+$/, '');
     const segs = path.split('/').filter(Boolean);
 
-    if (segs.length === 0) return null;
+    if (segs.length === 0) {
+      return {
+        kind: 'app',
+        chatId: null,
+        userIndex: null,
+        basePrefix: '',
+        sourcePath: '/app'
+      };
+    }
 
     let basePrefix = '';
     let userIndex = null;
@@ -271,14 +327,24 @@
       i = 2;
     }
 
-    if (segs[i] === 'app' && segs[i + 1]) {
-      const chatId = segs[i + 1];
+    if (segs.length === i) {
+      return {
+        kind: 'app',
+        chatId: null,
+        userIndex,
+        basePrefix,
+        sourcePath: `${basePrefix}/app`
+      };
+    }
+
+    if (segs[i] === 'app') {
+      const chatId = segs[i + 1] || null;
       return {
         kind: 'app',
         chatId,
         userIndex,
         basePrefix,
-        sourcePath: `${basePrefix}/app/${chatId}`
+        sourcePath: chatId ? `${basePrefix}/app/${chatId}` : `${basePrefix}/app`
       };
     }
 
@@ -585,6 +651,10 @@
     if (!route) {
       throw new Error('Could not resolve Gemini route. Are you on a conversation page?');
     }
+    // Temporary Gemini chats stay on /app while their c_... ID only exists in
+    // the batchexecute payload. Attach the captured ID so title lookup uses
+    // the same conversation as the read request below.
+    route.chatId = chatId;
     const at = getAtToken();
     if (!at) {
       throw new Error('Could not find anti-CSRF token "at" on the page.');

@@ -11,6 +11,7 @@ const injectScript = fs.readFileSync(
 
 const TOKEN = 'test-token';
 const CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
+const GEMINI_CONVERSATION_ID = 'c_77ab2f6b9faa3039';
 
 function createResponse(body) {
   return {
@@ -194,5 +195,45 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
   assert.equal(messages.length, 1);
   assert.equal(messages[0].type, 'OAI_CONVERSATION_ID');
   assert.equal(messages[0].conversationId, CONVERSATION_ID);
+  assert.equal(messages[0].token, TOKEN);
+});
+
+test('emits a Gemini conversation ID from a batchexecute response', async () => {
+  const messages = [];
+  const response = createResponse(
+    `[["wrb.fr","hNvQHb","[[\"${GEMINI_CONVERSATION_ID}\"]]",null,null,null,"generic"]]`
+  );
+  const window = {
+    location: {
+      hostname: 'gemini.google.com',
+      origin: 'https://gemini.google.com'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch('/_/BardChatUi/data/batchexecute?rpcids=hNvQHb&source-path=%2Fapp', {
+    method: 'POST',
+    body: 'f.req=test'
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'OAI_CONVERSATION_ID');
+  assert.equal(messages[0].conversationId, GEMINI_CONVERSATION_ID);
+  assert.equal(messages[0].platform, 'gemini');
   assert.equal(messages[0].token, TOKEN);
 });

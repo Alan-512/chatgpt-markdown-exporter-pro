@@ -38,18 +38,21 @@
     const message = event.data;
     if (message && message.type === 'OAI_CONVERSATION_ID') {
       // Security Check: Ignore conversation IDs that were not emitted by inject.js.
-      if (message.token !== secureToken || getPlatform() !== 'chatgpt') return;
-      const conversationId = extractConversationId(message.conversationId, 'chatgpt');
+      const platform = getPlatform();
+      if (message.token !== secureToken || (message.platform && message.platform !== platform)) return;
+      if (!['chatgpt', 'gemini'].includes(platform)) return;
+
+      const conversationId = extractConversationId(message.conversationId, platform);
       if (!conversationId) return;
 
-      if (isTemporaryChat('chatgpt')) {
+      if (isTemporaryChat(platform)) {
         observedTemporaryConversationId = conversationId;
         pendingTemporaryConversationId = null;
         pendingTemporaryConversationUrl = null;
         pendingTemporaryConversationAt = 0;
         if (document.body) updateUIState();
       } else {
-        // ChatGPT can deliver the ID before React renders the temporary-mode
+        // A provider can deliver the ID before React renders the temporary-mode
         // marker. Keep it briefly for the same page so that race does not
         // turn into a permanent "No conversation ID" state.
         pendingTemporaryConversationId = conversationId;
@@ -132,7 +135,8 @@
     },
     gemini: {
       queryFlags: ['temporary-chat'],
-      modePattern: /\btemporary\s+chat\b|\bask\s+in\s+a\s+temporary\s+chat\b/i,
+      modePattern: /\btemporary\s+chat\b|\bask\s+in\s+a\s+temporary\s+chat\b|临时(?:聊天|对话)/i,
+      activeModePattern: /\bturn\s+off\b.{0,40}\btemporary\s+chat\b|关闭.{0,40}临时(?:聊天|对话)/i,
       idPattern: /^[a-zA-Z0-9_:-]+$/
     },
     perplexity: {
@@ -156,7 +160,7 @@
   const inactiveTemporaryModeHints = {
     chatgpt: /\b(?:turn\s+on|start|enable|new)\b.{0,40}\btemporary(?:\s+chat)?\b|(?:开启|打开|开始|新建|启用).{0,40}临时(?:聊天|对话)/i,
     claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b/i,
-    gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b/i,
+    gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b|(?:开启|打开|开始|新建|启用).{0,40}临时(?:聊天|对话)/i,
     perplexity: /\b(?:enable|turn\s+on|start)\b.{0,40}\bincognito\b/i
   };
 
@@ -183,7 +187,11 @@
     '[class*="临时" i]',
     '[role="status"]',
     '[role="banner"]',
+    '[role="heading"]',
     'header',
+    'h1',
+    'h2',
+    'h3',
     'main h1',
     'main h2',
     'button'
@@ -270,7 +278,10 @@
 
   function getTemporaryConversationId(platform = getPlatform()) {
     const searchParams = new URL(window.location.href).searchParams;
-    for (const queryKey of ['conversationId', 'conversation_id']) {
+    for (const queryKey of [
+      'conversationId', 'conversation_id', 'chatId', 'chat_id',
+      'threadId', 'thread_id'
+    ]) {
       const id = extractConversationId(searchParams.get(queryKey), platform);
       if (id) return id;
     }

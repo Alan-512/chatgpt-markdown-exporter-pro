@@ -71,7 +71,7 @@ function loadContentScript(pathname, {
     },
     querySelectorAll(selector) {
       const nodes = [];
-      const modeSelector = /incognito|temporary|临时|role="status"|role="banner"|header|main h[12]|button/.test(selector);
+      const modeSelector = /incognito|temporary|临时|role="status"|role="banner"|role="heading"|header|(?:^|\s)h[1-3](?:\s|,|$)|main h[12]|button/.test(selector);
       const conversationSelector = /data-conversation-id|data-chat-id|data-thread-id|chat-|href\*="\/(?:chat|app|gem|search|page)\//.test(selector);
       if (temporaryModeLabel && modeSelector) {
         nodes.push({
@@ -423,6 +423,37 @@ test('mounts each vendor temporary chat when only the active DOM mode is signale
     page.makeDomReady();
     assert.equal(page.appendCount, 1, spec.hostname);
   }
+});
+
+test('mounts Gemini temporary chat from its localized heading on the /app route', () => {
+  const page = loadContentScript('/app', {
+    hostname: 'gemini.google.com',
+    temporaryMode: '临时对话',
+    temporaryModeTagName: 'h1',
+    temporaryConversationId: null
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 1);
+});
+
+test('keeps Gemini temporary UI mounted while its batchexecute ID arrives', () => {
+  const page = loadContentScript('/app', {
+    hostname: 'gemini.google.com',
+    temporaryMode: '临时对话',
+    temporaryModeTagName: 'h1'
+  });
+
+  page.makeDomReady();
+  page.receiveWindowMessage({
+    type: 'OAI_CONVERSATION_ID',
+    platform: 'gemini',
+    conversationId: 'c_77ab2f6b9faa3039',
+    token: SECURE_TOKEN
+  });
+
+  assert.equal(page.appendCount, 1);
 });
 
 test('retries each vendor temporary chat when its DOM conversation ID appears later', () => {
