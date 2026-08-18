@@ -2,7 +2,39 @@
   const secureToken = document.currentScript ? document.currentScript.dataset.token : null;
   const conversationCache = {};
   const PERPLEXITY_LAST_CACHE_KEY = '__perplexity_last_conversation__';
+  const CHATGPT_CONVERSATION_ID_PATTERN = /"conversation_id"\s*:\s*"([a-f0-9-]+)"/gi;
   let capturedToken = null;
+
+  function emitConversationIds(text) {
+    if (typeof text !== 'string') return;
+
+    const conversationIds = new Set();
+    let match;
+    while ((match = CHATGPT_CONVERSATION_ID_PATTERN.exec(text))) {
+      conversationIds.add(match[1]);
+    }
+    CHATGPT_CONVERSATION_ID_PATTERN.lastIndex = 0;
+
+    for (const conversationId of conversationIds) {
+      window.postMessage({
+        type: 'OAI_CONVERSATION_ID',
+        conversationId,
+        token: secureToken
+      }, window.location.origin);
+    }
+  }
+
+  function observeChatGPTConversationResponse(requestUrl, requestMethod, response) {
+    if (requestMethod === 'GET' || !/\/backend-api\/conversation(?:\/|$)/.test(requestUrl)) {
+      return;
+    }
+
+    try {
+      response.clone().text().then(emitConversationIds).catch(() => {});
+    } catch (e) {
+      // Some response types cannot be cloned; the page request must still complete.
+    }
+  }
 
   // Intercept fetch requests
   const originalFetch = window.fetch;
@@ -41,6 +73,9 @@
 
     // 2. Intercept and cache conversation JSON responses
     const requestMethod = (options.method || 'GET').toUpperCase();
+    if (typeof requestUrl === 'string') {
+      observeChatGPTConversationResponse(requestUrl, requestMethod, response);
+    }
     if (requestMethod === 'GET' && typeof requestUrl === 'string') {
       if (requestUrl.includes('/backend-api/conversation/')) {
         try {
@@ -1249,4 +1284,3 @@
 
   console.log('[Exporter Inject] Successfully initialized secure window.fetch hooks.');
 })();
-

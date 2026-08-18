@@ -14,6 +14,7 @@ const TEMPORARY_CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const CLAUDE_TEMPORARY_ID = '33333333-3333-4333-8333-333333333333';
 const GEMINI_TEMPORARY_ID = 'gemini-temp-chat-1';
 const PERPLEXITY_TEMPORARY_ID = 'temporary-thread-1';
+const SECURE_TOKEN = '00000000-0000-4000-8000-000000000000';
 
 function createNode() {
   return {
@@ -39,6 +40,7 @@ function loadContentScript(pathname, {
   temporaryModeTagName = 'div'
 } = {}) {
   const documentListeners = new Map();
+  const windowListeners = new Map();
   const intervalCallbacks = [];
   let mountedContainer = null;
   let appendCount = 0;
@@ -107,7 +109,11 @@ function loadContentScript(pathname, {
 
   const window = {
     location,
-    addEventListener() {},
+    addEventListener(type, callback) {
+      const listeners = windowListeners.get(type) || [];
+      listeners.push(callback);
+      windowListeners.set(type, listeners);
+    },
     postMessage() {}
   };
   window.window = window;
@@ -175,6 +181,15 @@ function loadContentScript(pathname, {
       temporaryConversationId = nextId;
       temporaryConversationLabel = nextId ? `对话 chat-${nextId}` : null;
     },
+    receiveWindowMessage(data) {
+      const listeners = windowListeners.get('message') || [];
+      const event = {
+        source: window,
+        origin: location.origin,
+        data
+      };
+      for (const callback of listeners) callback(event);
+    },
     poll() {
       for (const callback of intervalCallbacks) callback();
     },
@@ -231,6 +246,25 @@ test('mounts ChatGPT temporary chat from the Chinese composer marker', () => {
   });
 
   page.makeDomReady();
+
+  assert.equal(page.appendCount, 1);
+});
+
+test('mounts ChatGPT temporary chat when the network reveals its conversation ID', () => {
+  const page = loadContentScript('/', {
+    temporaryMode: '临时聊天',
+    temporaryModeTagName: 'textarea'
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 0);
+
+  page.receiveWindowMessage({
+    type: 'OAI_CONVERSATION_ID',
+    conversationId: TEMPORARY_CONVERSATION_ID,
+    token: SECURE_TOKEN
+  });
 
   assert.equal(page.appendCount, 1);
 });

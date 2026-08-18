@@ -20,6 +20,7 @@
   let menu = null;
   let statusDot = null;
   let statusText = null;
+  let observedTemporaryConversationId = null;
 
   // Active requests transaction map (prevents promise collisions and SPA race conditions)
   const pendingRequests = {};
@@ -32,6 +33,19 @@
     if (event.source !== window || event.origin !== window.location.origin) return;
     
     const message = event.data;
+    if (message && message.type === 'OAI_CONVERSATION_ID') {
+      // Security Check: Ignore conversation IDs that were not emitted by inject.js.
+      if (message.token !== secureToken || getPlatform() !== 'chatgpt') return;
+      if (!isTemporaryChat('chatgpt')) return;
+
+      const conversationId = extractConversationId(message.conversationId, 'chatgpt');
+      if (!conversationId) return;
+
+      observedTemporaryConversationId = conversationId;
+      if (document.body) updateUIState();
+      return;
+    }
+
     if (message && message.type === 'OAI_EXPORT_RESPONSE') {
       // Security Check: Ignore message if token doesn't match
       if (message.token !== secureToken) return;
@@ -258,7 +272,8 @@
         if (id) return id;
       }
     }
-    return null;
+
+    return observedTemporaryConversationId;
   }
 
   // Get the active conversation ID from the route or temporary-chat DOM state
@@ -1157,6 +1172,7 @@
   let lastTemporaryConversationId = null;
   setInterval(() => {
     const url = location.href;
+    if (url !== lastUrl) observedTemporaryConversationId = null;
     const platform = getPlatform();
     const shouldCheckTemporaryChat =
       url !== lastUrl ||
