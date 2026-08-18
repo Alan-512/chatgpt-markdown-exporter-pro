@@ -135,7 +135,7 @@
   }
 
   function observeGeminiConversationResponse(requestUrl, response) {
-    if (!GEMINI_BATCH_URL_PATTERN.test(requestUrl)) return;
+    if (!GEMINI_BATCH_URL_PATTERN.test(requestUrl) || isGeminiChatListRequest(requestUrl)) return;
 
     try {
       response.clone().text().then(emitGeminiConversationIds).catch(() => {});
@@ -145,11 +145,29 @@
   }
 
   function observeGeminiConversationRequest(requestUrl, requestMethod, body) {
-    if (requestMethod === 'GET' || typeof body !== 'string' || !GEMINI_BATCH_URL_PATTERN.test(requestUrl)) {
+    if (
+      requestMethod === 'GET' ||
+      typeof body !== 'string' ||
+      !GEMINI_BATCH_URL_PATTERN.test(requestUrl) ||
+      isGeminiChatListRequest(requestUrl)
+    ) {
       return;
     }
 
     emitGeminiConversationIds(body);
+  }
+
+  function isGeminiChatListRequest(requestUrl) {
+    try {
+      const url = new URL(requestUrl, window.location.origin);
+      const rpcIds = (url.searchParams.get('rpcids') || '')
+        .split(',')
+        .map(id => id.trim())
+        .filter(Boolean);
+      return rpcIds.length === 1 && rpcIds[0] === 'MaZiqc';
+    } catch (e) {
+      return false;
+    }
   }
 
   // Intercept fetch requests
@@ -753,6 +771,10 @@
     const payloads = parseBatchExecute(rawText, 'hNvQHb');
     if (!payloads.length) {
       throw new Error('No conversation payloads found in Gemini batchexecute response.');
+    }
+
+    if (!payloads.some(payload => JSON.stringify(payload).includes(convKey))) {
+      throw new Error('Gemini returned a different conversation than the active chat.');
     }
 
     const blocks = extractAllBlocks(payloads);

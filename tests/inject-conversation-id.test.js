@@ -238,6 +238,42 @@ test('emits a Gemini conversation ID from a batchexecute response', async () => 
   assert.equal(messages[0].token, TOKEN);
 });
 
+test('does not use the first Gemini sidebar conversation as the active chat ID', async () => {
+  const messages = [];
+  const response = createResponse(
+    `[["wrb.fr","MaZiqc","[[\"c_first-sidebar-chat\"]]",null,null,null,"generic"]]`
+  );
+  const window = {
+    location: {
+      hostname: 'gemini.google.com',
+      origin: 'https://gemini.google.com'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch('/_/BardChatUi/data/batchexecute?rpcids=MaZiqc&source-path=%2Fapp', {
+    method: 'POST',
+    body: 'f.req=test'
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(messages.length, 0);
+});
+
 test('emits a Claude conversation ID from a conversation API request', async () => {
   const messages = [];
   const response = createResponse('{}');

@@ -296,19 +296,12 @@
       if (id) return id;
     }
 
-    const elements = document.querySelectorAll(temporaryConversationSelectors);
-    const attributes = [
-      'data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label', 'href'
-    ];
-    for (const element of elements) {
-      for (const attribute of attributes) {
-        const id = extractConversationId(element.getAttribute(attribute), platform);
-        if (id) return id;
-      }
-    }
-
+    // Network interception is the source of truth for a temporary Gemini
+    // chat. Its sidebar still contains links for ordinary conversations, so
+    // treating the first /app/<id> link as the active chat exports the wrong
+    // conversation.
+    if (observedTemporaryConversationId) return observedTemporaryConversationId;
     if (
-      !observedTemporaryConversationId &&
       pendingTemporaryConversationId &&
       pendingTemporaryConversationUrl === location.href &&
       Date.now() - pendingTemporaryConversationAt <= 10000
@@ -317,9 +310,26 @@
       pendingTemporaryConversationId = null;
       pendingTemporaryConversationUrl = null;
       pendingTemporaryConversationAt = 0;
+      return observedTemporaryConversationId;
     }
 
-    return observedTemporaryConversationId;
+    const isGemini = platform === 'gemini';
+    const elements = document.querySelectorAll(
+      isGemini
+        ? '[data-conversation-id], main [data-chat-id], main [data-thread-id]'
+        : temporaryConversationSelectors
+    );
+    const attributes = isGemini
+      ? ['data-conversation-id', 'data-chat-id', 'data-thread-id']
+      : ['data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label', 'href'];
+    for (const element of elements) {
+      for (const attribute of attributes) {
+        const id = extractConversationId(element.getAttribute(attribute), platform);
+        if (id) return id;
+      }
+    }
+
+    return null;
   }
 
   // Get the active conversation ID from the route or temporary-chat DOM state
