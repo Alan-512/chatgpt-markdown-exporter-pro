@@ -211,6 +211,40 @@ test('mounts the export UI for a temporary chat using its DOM conversation ID', 
   assert.equal(page.appendCount, 1);
 });
 
+test('mounts ChatGPT temporary chat from the active toggle label', () => {
+  const page = loadContentScript('/', {
+    temporaryMode: 'Turn off temporary chat',
+    temporaryModeTagName: 'button',
+    temporaryConversationId: TEMPORARY_CONVERSATION_ID
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 1);
+});
+
+test('mounts ChatGPT temporary chat from its conversationId query parameter', () => {
+  const page = loadContentScript(
+    `/?conversationId=${TEMPORARY_CONVERSATION_ID}&temporary-chat=true`
+  );
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 1);
+});
+
+test('does not treat ChatGPT turn-on temporary toggle as active mode', () => {
+  const page = loadContentScript('/', {
+    temporaryMode: 'Turn on temporary chat',
+    temporaryModeTagName: 'button',
+    temporaryConversationId: TEMPORARY_CONVERSATION_ID
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 0);
+});
+
 test('retries temporary chat UI mounting when its DOM conversation ID appears later', () => {
   const page = loadContentScript('/?temporary-chat=true');
   page.makeDomReady();

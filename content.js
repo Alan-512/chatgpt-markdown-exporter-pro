@@ -94,7 +94,8 @@
   const temporaryChatConfig = {
     chatgpt: {
       queryFlags: ['temporary-chat'],
-      modePattern: /\btemporary\s+chat\b/i,
+      modePattern: /\btemporary(?:\s+chat)?\b/i,
+      activeModePattern: /\bturn\s+off\b.{0,40}\btemporary(?:\s+chat)?\b/i,
       idPattern: /^[a-f0-9-]+$/i
     },
     claude: {
@@ -126,6 +127,7 @@
   };
 
   const inactiveTemporaryModeHints = {
+    chatgpt: /\b(?:turn\s+on|start|enable|new)\b.{0,40}\btemporary(?:\s+chat)?\b/i,
     claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b/i,
     gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b/i,
     perplexity: /\b(?:enable|turn\s+on|start)\b.{0,40}\bincognito\b/i
@@ -186,6 +188,9 @@
     const text = getElementAttributeText(element);
     if (!pattern.test(text)) return false;
 
+    const activeModePattern = temporaryChatConfig[platform]?.activeModePattern;
+    if (activeModePattern?.test(text)) return true;
+
     const tagName = typeof element.tagName === 'string' ? element.tagName.toLowerCase() : '';
     const role = element.getAttribute('role');
     if (tagName === 'button' || role === 'button') {
@@ -230,6 +235,12 @@
   }
 
   function getTemporaryConversationId(platform = getPlatform()) {
+    const searchParams = new URL(window.location.href).searchParams;
+    for (const queryKey of ['conversationId', 'conversation_id']) {
+      const id = extractConversationId(searchParams.get(queryKey), platform);
+      if (id) return id;
+    }
+
     const elements = document.querySelectorAll(temporaryConversationSelectors);
     const attributes = [
       'data-conversation-id', 'data-chat-id', 'data-thread-id', 'aria-label', 'href'
