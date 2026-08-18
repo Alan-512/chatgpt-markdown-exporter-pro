@@ -250,7 +250,7 @@ test('mounts ChatGPT temporary chat from the Chinese composer marker', () => {
   assert.equal(page.appendCount, 1);
 });
 
-test('mounts ChatGPT temporary chat when the network reveals its conversation ID', () => {
+test('keeps ChatGPT temporary chat visible before the network reveals its conversation ID', () => {
   const page = loadContentScript('/', {
     temporaryMode: '临时聊天',
     temporaryModeTagName: 'textarea'
@@ -258,7 +258,7 @@ test('mounts ChatGPT temporary chat when the network reveals its conversation ID
 
   page.makeDomReady();
 
-  assert.equal(page.appendCount, 0);
+  assert.equal(page.appendCount, 1);
 
   page.receiveWindowMessage({
     type: 'OAI_CONVERSATION_ID',
@@ -307,7 +307,7 @@ test('retries temporary chat UI mounting when its DOM conversation ID appears la
   const page = loadContentScript('/?temporary-chat=true');
   page.makeDomReady();
 
-  assert.equal(page.appendCount, 0);
+  assert.equal(page.appendCount, 1);
 
   page.setTemporaryConversationId(TEMPORARY_CONVERSATION_ID);
   page.poll();
@@ -408,7 +408,7 @@ test('retries each vendor temporary chat when its DOM conversation ID appears la
   for (const spec of VENDOR_TEMPORARY_CASES) {
     const page = loadVendorCase(spec, { pathname: spec.domPath, id: null });
     page.makeDomReady();
-    assert.equal(page.appendCount, 0, `${spec.hostname} mounted before its ID appeared`);
+    assert.equal(page.appendCount, 1, `${spec.hostname} did not show its private-chat control`);
     page.setTemporaryConversationId(spec.id);
     page.poll();
     assert.equal(page.appendCount, 1, `${spec.hostname} did not mount after its ID appeared`);

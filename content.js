@@ -1149,8 +1149,13 @@
 
   // Display or hide the FAB based on page state
   function updateUIState() {
+    const platform = getPlatform();
+    const temporaryChat = isTemporaryChat(platform);
     const conversationId = getActiveConversationId();
-    if (conversationId) {
+    // A private/temporary page is already a valid export context even while
+    // ChatGPT is still resolving its non-routable conversation ID. Keep the
+    // control visible so a late network ID can finish the export path.
+    if (conversationId || temporaryChat) {
       if (!document.getElementById('oai-exporter-container')) {
         initUI();
       }
