@@ -71,7 +71,7 @@ function loadContentScript(pathname, {
     },
     querySelectorAll(selector) {
       const nodes = [];
-      const modeSelector = /incognito|temporary|临时|role="status"|role="banner"|role="heading"|header|(?:^|\s)h[1-3](?:\s|,|$)|main h[12]|button/.test(selector);
+      const modeSelector = /incognito|temporary|临时|隐身|无痕|role="status"|role="banner"|role="heading"|header|(?:^|\s)h[1-3](?:\s|,|$)|main h[12]|button/.test(selector);
       const conversationSelector = /data-conversation-id|data-chat-id|data-thread-id|chat-|href\*="\/(?:chat|app|gem|search|page)\//.test(selector);
       if (temporaryModeLabel && modeSelector) {
         nodes.push({
@@ -454,6 +454,31 @@ test('keeps Gemini temporary UI mounted while its batchexecute ID arrives', () =
   });
 
   assert.equal(page.appendCount, 1);
+});
+
+test('mounts localized Claude and Perplexity temporary chats', () => {
+  const cases = [
+    {
+      hostname: 'claude.ai',
+      pathname: '/new',
+      temporaryMode: '隐身聊天'
+    },
+    {
+      hostname: 'www.perplexity.ai',
+      pathname: '/',
+      temporaryMode: '隐身模式'
+    }
+  ];
+
+  for (const spec of cases) {
+    const page = loadContentScript(spec.pathname, {
+      hostname: spec.hostname,
+      temporaryMode: spec.temporaryMode,
+      temporaryModeTagName: 'h1'
+    });
+    page.makeDomReady();
+    assert.equal(page.appendCount, 1, spec.hostname);
+  }
 });
 
 test('retries each vendor temporary chat when its DOM conversation ID appears later', () => {

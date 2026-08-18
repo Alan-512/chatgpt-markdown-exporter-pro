@@ -5,6 +5,10 @@
   const CHATGPT_CONVERSATION_ID_PATTERN = /(?:["'](?:conversation_id|conversationId)["']\s*:\s*["']|(?:^|[?&\s])(?:conversation_id|conversationId)=)([a-f0-9-]+)/gi;
   const CHATGPT_CONVERSATION_URL_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation(?:[\/?#]|$)/i;
   const CHATGPT_CONVERSATION_ROUTE_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation\/([a-f0-9-]+)(?:[\/?#]|$)/i;
+  const CLAUDE_CONVERSATION_URL_PATTERN = /\/api\/organizations\/[^\/?#]+\/chat_conversations\/([a-f0-9-]+)(?:[\/?#]|$)/i;
+  const PERPLEXITY_THREAD_URL_PATTERN = /\/(?:search|page)\/([a-zA-Z0-9_%:.~=-]+)(?:[\/?#]|$)/i;
+  const PERPLEXITY_RELEVANT_URL_PATTERN = /\/api\/|graphql|thread|conversation|query|search|answer/i;
+  const PERPLEXITY_CONVERSATION_ID_PATTERN = /["'](?:threadId|thread_id|conversationId|conversation_id)["']\s*:\s*["']([a-zA-Z0-9_%:.~=-]+)["']/gi;
   const GEMINI_BATCH_URL_PATTERN = /\/_\/BardChatUi\/data\/batchexecute(?:[?/#]|$)/i;
   const GEMINI_CONVERSATION_ID_PATTERN = /\bc_[a-zA-Z0-9_-]{8,}\b/g;
   const emittedConversationIds = new Set();
@@ -13,7 +17,9 @@
   function emitConversationId(conversationId, platform = 'chatgpt') {
     const idPattern = platform === 'gemini'
       ? /^c_[a-zA-Z0-9_-]{8,}$/
-      : /^[a-f0-9-]+$/i;
+      : platform === 'perplexity'
+        ? /^[a-zA-Z0-9_%:.~=-]+$/
+        : /^[a-f0-9-]+$/i;
     if (typeof conversationId !== 'string' || !idPattern.test(conversationId)) return;
 
     const cacheKey = `${platform}:${conversationId}`;
@@ -68,6 +74,50 @@
     emitConversationIds(body);
   }
 
+  function emitClaudeConversationIdFromUrl(requestUrl) {
+    const match = typeof requestUrl === 'string' && requestUrl.match(CLAUDE_CONVERSATION_URL_PATTERN);
+    if (match) emitConversationId(match[1], 'claude');
+  }
+
+  function emitPerplexityConversationIdFromUrl(requestUrl) {
+    const match = typeof requestUrl === 'string' && requestUrl.match(PERPLEXITY_THREAD_URL_PATTERN);
+    if (match) emitConversationId(match[1], 'perplexity');
+  }
+
+  function emitPerplexityConversationIds(text) {
+    if (typeof text !== 'string') return;
+
+    const normalizedText = text.replace(/\\"/g, '"');
+    const conversationIds = new Set();
+    let match;
+    while ((match = PERPLEXITY_CONVERSATION_ID_PATTERN.exec(normalizedText))) {
+      conversationIds.add(match[1]);
+    }
+    PERPLEXITY_CONVERSATION_ID_PATTERN.lastIndex = 0;
+
+    for (const conversationId of conversationIds) {
+      emitConversationId(conversationId, 'perplexity');
+    }
+  }
+
+  function observePerplexityConversationRequest(requestUrl, requestMethod, body) {
+    emitPerplexityConversationIdFromUrl(requestUrl);
+    if (requestMethod !== 'GET' && typeof body === 'string') {
+      emitPerplexityConversationIds(body);
+    }
+  }
+
+  function observePerplexityConversationResponse(requestUrl, response) {
+    emitPerplexityConversationIdFromUrl(requestUrl);
+    if (!response) return;
+
+    try {
+      response.clone().text().then(emitPerplexityConversationIds).catch(() => {});
+    } catch (e) {
+      // Some response types cannot be cloned; the page request must still complete.
+    }
+  }
+
   function emitGeminiConversationIds(text) {
     if (typeof text !== 'string') return;
 
@@ -118,23 +168,31 @@
     const requestMethod = (options.method || request?.method || 'GET').toUpperCase();
     const requestHeaders = options.headers || request?.headers;
     const isBackendRequest = typeof requestUrl === 'string' && /\/backend-api\//i.test(requestUrl);
+    const isClaudeRequest = typeof requestUrl === 'string' && CLAUDE_CONVERSATION_URL_PATTERN.test(requestUrl);
     const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_BATCH_URL_PATTERN.test(requestUrl);
+    const isPerplexityRequest = isPerplexityHost() &&
+      typeof requestUrl === 'string' &&
+      PERPLEXITY_RELEVANT_URL_PATTERN.test(requestUrl);
 
     if (isBackendRequest) {
       observeChatGPTConversationRequest(requestUrl, requestMethod, options.body);
     }
+    if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
     if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, options.body);
+    if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, options.body);
     if (
       request &&
       typeof request.clone === 'function' &&
       typeof requestUrl === 'string' &&
       requestMethod !== 'GET' &&
-      (isBackendRequest || isGeminiRequest)
+      (isBackendRequest || isClaudeRequest || isGeminiRequest || isPerplexityRequest)
     ) {
       try {
         request.clone().text().then(body => {
           if (isBackendRequest) observeChatGPTConversationRequest(requestUrl, requestMethod, body);
+          if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
           if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, body);
+          if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, body);
         })
           .catch(() => {});
       } catch (e) {
@@ -167,7 +225,9 @@
     // 2. Intercept and cache conversation JSON responses
     if (typeof requestUrl === 'string') {
       observeChatGPTConversationResponse(requestUrl, requestMethod, response);
+      if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
       observeGeminiConversationResponse(requestUrl, response);
+      if (isPerplexityRequest) observePerplexityConversationResponse(requestUrl, response);
     }
     if (requestMethod === 'GET' && typeof requestUrl === 'string') {
       if (CHATGPT_CONVERSATION_ROUTE_PATTERN.test(requestUrl)) {
@@ -192,6 +252,7 @@
           if (match) {
             const orgId = match[1];
             const conversationId = match[2];
+            emitConversationId(conversationId, 'claude');
             const clonedResponse = response.clone();
             clonedResponse.json().then(data => {
               if (data && data.chat_messages) {

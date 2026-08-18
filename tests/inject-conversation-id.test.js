@@ -237,3 +237,71 @@ test('emits a Gemini conversation ID from a batchexecute response', async () => 
   assert.equal(messages[0].platform, 'gemini');
   assert.equal(messages[0].token, TOKEN);
 });
+
+test('emits a Claude conversation ID from a conversation API request', async () => {
+  const messages = [];
+  const response = createResponse('{}');
+  const window = {
+    location: {
+      hostname: 'claude.ai',
+      origin: 'https://claude.ai'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch(`/api/organizations/${CONVERSATION_ID}/chat_conversations/${CONVERSATION_ID}/messages`, {
+    method: 'POST',
+    body: '{}'
+  });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].conversationId, CONVERSATION_ID);
+  assert.equal(messages[0].platform, 'claude');
+});
+
+test('emits a Perplexity conversation ID from a thread response', async () => {
+  const messages = [];
+  const response = createResponse('{"threadId":"temporary-thread-123"}');
+  const window = {
+    location: {
+      hostname: 'www.perplexity.ai',
+      origin: 'https://www.perplexity.ai'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch('/api/threads', { method: 'POST', body: '{}' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].conversationId, 'temporary-thread-123');
+  assert.equal(messages[0].platform, 'perplexity');
+});

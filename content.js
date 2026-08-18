@@ -40,7 +40,7 @@
       // Security Check: Ignore conversation IDs that were not emitted by inject.js.
       const platform = getPlatform();
       if (message.token !== secureToken || (message.platform && message.platform !== platform)) return;
-      if (!['chatgpt', 'gemini'].includes(platform)) return;
+      if (!['chatgpt', 'gemini', 'claude', 'perplexity'].includes(platform)) return;
 
       const conversationId = extractConversationId(message.conversationId, platform);
       if (!conversationId) return;
@@ -130,7 +130,8 @@
     },
     claude: {
       queryFlags: ['incognito'],
-      modePattern: /\bincognito(?:\s+chat)?\b/i,
+      modePattern: /\bincognito(?:\s+chat)?\b|隐身(?:聊天|对话)|无痕(?:聊天|对话)/i,
+      activeModePattern: /\bturn\s+off\b.{0,40}\bincognito(?:\s+chat)?\b|关闭.{0,40}(?:隐身|无痕)(?:聊天|对话)?/i,
       idPattern: /^[a-f0-9-]+$/i
     },
     gemini: {
@@ -141,7 +142,8 @@
     },
     perplexity: {
       queryFlags: ['incognito', 'temporary'],
-      modePattern: /\bincognito(?:\s+mode)?\b|\btemporary\s+thread\b/i,
+      modePattern: /\bincognito(?:\s+mode)?\b|\btemporary\s+thread\b|隐身(?:模式|聊天|对话)|临时(?:线程|聊天|对话)/i,
+      activeModePattern: /\bturn\s+off\b.{0,40}\bincognito(?:\s+mode)?\b|关闭.{0,40}(?:隐身|临时)(?:模式|线程|聊天|对话)?/i,
       idPattern: /^[a-zA-Z0-9_%:.~=-]+$/
     }
   };
@@ -159,25 +161,33 @@
 
   const inactiveTemporaryModeHints = {
     chatgpt: /\b(?:turn\s+on|start|enable|new)\b.{0,40}\btemporary(?:\s+chat)?\b|(?:开启|打开|开始|新建|启用).{0,40}临时(?:聊天|对话)/i,
-    claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b/i,
+    claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b|(?:开启|打开|开始|新建|启用).{0,40}(?:隐身|无痕)(?:聊天|对话)?/i,
     gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b|(?:开启|打开|开始|新建|启用).{0,40}临时(?:聊天|对话)/i,
-    perplexity: /\b(?:enable|turn\s+on|start)\b.{0,40}\bincognito\b/i
+    perplexity: /\b(?:enable|turn\s+on|start|new)\b.{0,40}\b(?:incognito|temporary\s+thread)\b|(?:开启|打开|开始|新建|启用).{0,40}(?:隐身|临时)(?:模式|线程|聊天|对话)?/i
   };
 
   const temporaryModeSelectors = [
     '[aria-label*="incognito" i]',
+    '[aria-label*="隐身" i]',
+    '[aria-label*="无痕" i]',
     '[aria-label*="temporary" i]',
     '[aria-label*="临时" i]',
     '[data-testid*="incognito" i]',
+    '[data-testid*="隐身" i]',
+    '[data-testid*="无痕" i]',
     '[data-testid*="temporary" i]',
     '[data-testid*="临时" i]',
     '[data-test-id*="incognito" i]',
+    '[data-test-id*="隐身" i]',
+    '[data-test-id*="无痕" i]',
     '[data-test-id*="temp" i]',
     '[data-test-id*="临时" i]',
     '[data-tooltip*="incognito" i]',
     '[data-tooltip*="temporary" i]',
     '[data-tooltip*="临时" i]',
     '[title*="incognito" i]',
+    '[title*="隐身" i]',
+    '[title*="无痕" i]',
     '[title*="temporary" i]',
     '[title*="临时" i]',
     '[placeholder*="temporary" i]',
