@@ -5,6 +5,16 @@
   const CHATGPT_CONVERSATION_ID_PATTERN = /"conversation_id"\s*:\s*"([a-f0-9-]+)"/gi;
   let capturedToken = null;
 
+  function emitConversationId(conversationId) {
+    if (typeof conversationId !== 'string' || !/^[a-f0-9-]+$/i.test(conversationId)) return;
+
+    window.postMessage({
+      type: 'OAI_CONVERSATION_ID',
+      conversationId,
+      token: secureToken
+    }, window.location.origin);
+  }
+
   function emitConversationIds(text) {
     if (typeof text !== 'string') return;
 
@@ -16,11 +26,7 @@
     CHATGPT_CONVERSATION_ID_PATTERN.lastIndex = 0;
 
     for (const conversationId of conversationIds) {
-      window.postMessage({
-        type: 'OAI_CONVERSATION_ID',
-        conversationId,
-        token: secureToken
-      }, window.location.origin);
+      emitConversationId(conversationId);
     }
   }
 
@@ -83,6 +89,7 @@
           const match = cleanUrl.match(/\/backend-api\/conversation\/([a-f0-9-]+)$/);
           if (match) {
             const conversationId = match[1];
+            emitConversationId(conversationId);
             const clonedResponse = response.clone();
             clonedResponse.json().then(data => {
               if (data && data.mapping && data.current_node) {

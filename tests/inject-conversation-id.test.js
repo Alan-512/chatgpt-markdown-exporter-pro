@@ -58,3 +58,36 @@ test('emits a conversation ID from a ChatGPT conversation stream response', asyn
   assert.equal(messages[0].conversationId, CONVERSATION_ID);
   assert.equal(messages[0].token, TOKEN);
 });
+
+test('emits a conversation ID from a ChatGPT conversation GET request', async () => {
+  const messages = [];
+  const response = createResponse('{}');
+  const window = {
+    location: {
+      hostname: 'chatgpt.com',
+      origin: 'https://chatgpt.com'
+    },
+    fetch: async () => response,
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener() {}
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch(`/backend-api/conversation/${CONVERSATION_ID}`, { method: 'GET' });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'OAI_CONVERSATION_ID');
+  assert.equal(messages[0].conversationId, CONVERSATION_ID);
+  assert.equal(messages[0].token, TOKEN);
+});
