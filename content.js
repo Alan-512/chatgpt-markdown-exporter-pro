@@ -94,8 +94,8 @@
   const temporaryChatConfig = {
     chatgpt: {
       queryFlags: ['temporary-chat'],
-      modePattern: /\btemporary(?:\s+chat)?\b/i,
-      activeModePattern: /\bturn\s+off\b.{0,40}\btemporary(?:\s+chat)?\b/i,
+      modePattern: /\btemporary(?:\s+chat)?\b|临时(?:聊天|对话)/i,
+      activeModePattern: /\bturn\s+off\b.{0,40}\btemporary(?:\s+chat)?\b|关闭.{0,40}临时(?:聊天|对话)/i,
       idPattern: /^[a-f0-9-]+$/i
     },
     claude: {
@@ -127,7 +127,7 @@
   };
 
   const inactiveTemporaryModeHints = {
-    chatgpt: /\b(?:turn\s+on|start|enable|new)\b.{0,40}\btemporary(?:\s+chat)?\b/i,
+    chatgpt: /\b(?:turn\s+on|start|enable|new)\b.{0,40}\btemporary(?:\s+chat)?\b|(?:开启|打开|开始|新建|启用).{0,40}临时(?:聊天|对话)/i,
     claude: /\b(?:start|enable|new)\b.{0,40}\bincognito\b/i,
     gemini: /\b(?:start|enable|new)\b.{0,40}\btemporary\s+chat\b/i,
     perplexity: /\b(?:enable|turn\s+on|start)\b.{0,40}\bincognito\b/i
@@ -136,17 +136,24 @@
   const temporaryModeSelectors = [
     '[aria-label*="incognito" i]',
     '[aria-label*="temporary" i]',
+    '[aria-label*="临时" i]',
     '[data-testid*="incognito" i]',
     '[data-testid*="temporary" i]',
+    '[data-testid*="临时" i]',
     '[data-test-id*="incognito" i]',
     '[data-test-id*="temp" i]',
+    '[data-test-id*="临时" i]',
     '[data-tooltip*="incognito" i]',
     '[data-tooltip*="temporary" i]',
+    '[data-tooltip*="临时" i]',
     '[title*="incognito" i]',
     '[title*="temporary" i]',
+    '[title*="临时" i]',
     '[placeholder*="temporary" i]',
+    '[placeholder*="临时" i]',
     '[class*="incognito" i]',
     '[class*="temporary" i]',
+    '[class*="临时" i]',
     '[role="status"]',
     '[role="banner"]',
     'header',

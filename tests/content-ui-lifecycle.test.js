@@ -69,7 +69,7 @@ function loadContentScript(pathname, {
     },
     querySelectorAll(selector) {
       const nodes = [];
-      const modeSelector = /incognito|temporary|role="status"|role="banner"|header|main h[12]|button/.test(selector);
+      const modeSelector = /incognito|temporary|临时|role="status"|role="banner"|header|main h[12]|button/.test(selector);
       const conversationSelector = /data-conversation-id|data-chat-id|data-thread-id|chat-|href\*="\/(?:chat|app|gem|search|page)\//.test(selector);
       if (temporaryModeLabel && modeSelector) {
         nodes.push({
@@ -223,6 +223,18 @@ test('mounts ChatGPT temporary chat from the active toggle label', () => {
   assert.equal(page.appendCount, 1);
 });
 
+test('mounts ChatGPT temporary chat from the Chinese composer marker', () => {
+  const page = loadContentScript('/', {
+    temporaryMode: '临时聊天',
+    temporaryModeTagName: 'textarea',
+    temporaryConversationId: TEMPORARY_CONVERSATION_ID
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 1);
+});
+
 test('mounts ChatGPT temporary chat from its conversationId query parameter', () => {
   const page = loadContentScript(
     `/?conversationId=${TEMPORARY_CONVERSATION_ID}&temporary-chat=true`
@@ -236,6 +248,18 @@ test('mounts ChatGPT temporary chat from its conversationId query parameter', ()
 test('does not treat ChatGPT turn-on temporary toggle as active mode', () => {
   const page = loadContentScript('/', {
     temporaryMode: 'Turn on temporary chat',
+    temporaryModeTagName: 'button',
+    temporaryConversationId: TEMPORARY_CONVERSATION_ID
+  });
+
+  page.makeDomReady();
+
+  assert.equal(page.appendCount, 0);
+});
+
+test('does not treat ChatGPT Chinese turn-on toggle as active mode', () => {
+  const page = loadContentScript('/', {
+    temporaryMode: '开启临时聊天',
     temporaryModeTagName: 'button',
     temporaryConversationId: TEMPORARY_CONVERSATION_ID
   });
