@@ -181,6 +181,9 @@ function loadContentScript(pathname, {
       temporaryConversationId = nextId;
       temporaryConversationLabel = nextId ? `对话 chat-${nextId}` : null;
     },
+    setTemporaryMode(nextMode) {
+      temporaryModeLabel = nextMode;
+    },
     receiveWindowMessage(data) {
       const listeners = windowListeners.get('message') || [];
       const event = {
@@ -265,6 +268,24 @@ test('keeps ChatGPT temporary chat visible before the network reveals its conver
     conversationId: TEMPORARY_CONVERSATION_ID,
     token: SECURE_TOKEN
   });
+
+  assert.equal(page.appendCount, 1);
+});
+
+test('keeps a network conversation ID until the temporary marker renders', () => {
+  const page = loadContentScript('/');
+
+  page.makeDomReady();
+  page.receiveWindowMessage({
+    type: 'OAI_CONVERSATION_ID',
+    conversationId: TEMPORARY_CONVERSATION_ID,
+    token: SECURE_TOKEN
+  });
+
+  assert.equal(page.appendCount, 0);
+
+  page.setTemporaryMode('临时聊天');
+  page.poll();
 
   assert.equal(page.appendCount, 1);
 });

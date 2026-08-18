@@ -2,11 +2,16 @@
   const secureToken = document.currentScript ? document.currentScript.dataset.token : null;
   const conversationCache = {};
   const PERPLEXITY_LAST_CACHE_KEY = '__perplexity_last_conversation__';
-  const CHATGPT_CONVERSATION_ID_PATTERN = /"conversation_id"\s*:\s*"([a-f0-9-]+)"/gi;
+  const CHATGPT_CONVERSATION_ID_PATTERN = /(?:["'](?:conversation_id|conversationId)["']\s*:\s*["']|(?:^|[?&\s])(?:conversation_id|conversationId)=)([a-f0-9-]+)/gi;
+  const CHATGPT_CONVERSATION_URL_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation(?:[\/?#]|$)/i;
+  const CHATGPT_CONVERSATION_ROUTE_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation\/([a-f0-9-]+)(?:[\/?#]|$)/i;
+  const emittedConversationIds = new Set();
   let capturedToken = null;
 
   function emitConversationId(conversationId) {
     if (typeof conversationId !== 'string' || !/^[a-f0-9-]+$/i.test(conversationId)) return;
+    if (emittedConversationIds.has(conversationId)) return;
+    emittedConversationIds.add(conversationId);
 
     window.postMessage({
       type: 'OAI_CONVERSATION_ID',
@@ -18,9 +23,10 @@
   function emitConversationIds(text) {
     if (typeof text !== 'string') return;
 
+    const normalizedText = text.replace(/\\"/g, '"');
     const conversationIds = new Set();
     let match;
-    while ((match = CHATGPT_CONVERSATION_ID_PATTERN.exec(text))) {
+    while ((match = CHATGPT_CONVERSATION_ID_PATTERN.exec(normalizedText))) {
       conversationIds.add(match[1]);
     }
     CHATGPT_CONVERSATION_ID_PATTERN.lastIndex = 0;
@@ -31,7 +37,7 @@
   }
 
   function observeChatGPTConversationResponse(requestUrl, requestMethod, response) {
-    if (requestMethod === 'GET' || !/\/backend-api\/conversation(?:\/|$)/.test(requestUrl)) {
+    if (!CHATGPT_CONVERSATION_URL_PATTERN.test(requestUrl)) {
       return;
     }
 
@@ -42,10 +48,23 @@
     }
   }
 
+  function observeChatGPTConversationRequest(requestUrl, requestMethod, body) {
+    if (
+      requestMethod === 'GET' ||
+      typeof body !== 'string' ||
+      !/\/backend-api\//i.test(requestUrl)
+    ) {
+      return;
+    }
+
+    emitConversationIds(body);
+  }
+
   // Intercept fetch requests
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
     let requestUrl = '';
+    const request = args[0] && typeof args[0] === 'object' ? args[0] : null;
     if (typeof args[0] === 'string') {
       requestUrl = args[0];
     } else if (typeof URL !== 'undefined' && args[0] instanceof URL) {
@@ -54,10 +73,31 @@
       requestUrl = args[0].url || '';
     }
     const options = args[1] || {};
+    const requestMethod = (options.method || request?.method || 'GET').toUpperCase();
+    const requestHeaders = options.headers || request?.headers;
+
+    if (typeof requestUrl === 'string') {
+      observeChatGPTConversationRequest(requestUrl, requestMethod, options.body);
+    }
+    if (
+      request &&
+      typeof request.clone === 'function' &&
+      typeof requestUrl === 'string' &&
+      requestMethod !== 'GET' &&
+      /\/backend-api\//i.test(requestUrl)
+    ) {
+      try {
+        request.clone().text()
+          .then(body => observeChatGPTConversationRequest(requestUrl, requestMethod, body))
+          .catch(() => {});
+      } catch (e) {
+        // Some Request bodies cannot be cloned; the page request must still complete.
+      }
+    }
 
     // 1. Try to capture Authorization header from outgoing requests
-    if (options.headers) {
-      let headers = options.headers;
+    if (requestHeaders) {
+      let headers = requestHeaders;
       let token = null;
       if (headers instanceof Headers) {
         if (headers.has('Authorization')) {
@@ -78,15 +118,13 @@
     const response = await originalFetch.apply(this, args);
 
     // 2. Intercept and cache conversation JSON responses
-    const requestMethod = (options.method || 'GET').toUpperCase();
     if (typeof requestUrl === 'string') {
       observeChatGPTConversationResponse(requestUrl, requestMethod, response);
     }
     if (requestMethod === 'GET' && typeof requestUrl === 'string') {
-      if (requestUrl.includes('/backend-api/conversation/')) {
+      if (CHATGPT_CONVERSATION_ROUTE_PATTERN.test(requestUrl)) {
         try {
-          const cleanUrl = requestUrl.split('?')[0];
-          const match = cleanUrl.match(/\/backend-api\/conversation\/([a-f0-9-]+)$/);
+          const match = requestUrl.match(CHATGPT_CONVERSATION_ROUTE_PATTERN);
           if (match) {
             const conversationId = match[1];
             emitConversationId(conversationId);

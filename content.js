@@ -21,6 +21,9 @@
   let statusDot = null;
   let statusText = null;
   let observedTemporaryConversationId = null;
+  let pendingTemporaryConversationId = null;
+  let pendingTemporaryConversationUrl = null;
+  let pendingTemporaryConversationAt = 0;
 
   // Active requests transaction map (prevents promise collisions and SPA race conditions)
   const pendingRequests = {};
@@ -36,13 +39,23 @@
     if (message && message.type === 'OAI_CONVERSATION_ID') {
       // Security Check: Ignore conversation IDs that were not emitted by inject.js.
       if (message.token !== secureToken || getPlatform() !== 'chatgpt') return;
-      if (!isTemporaryChat('chatgpt')) return;
-
       const conversationId = extractConversationId(message.conversationId, 'chatgpt');
       if (!conversationId) return;
 
-      observedTemporaryConversationId = conversationId;
-      if (document.body) updateUIState();
+      if (isTemporaryChat('chatgpt')) {
+        observedTemporaryConversationId = conversationId;
+        pendingTemporaryConversationId = null;
+        pendingTemporaryConversationUrl = null;
+        pendingTemporaryConversationAt = 0;
+        if (document.body) updateUIState();
+      } else {
+        // ChatGPT can deliver the ID before React renders the temporary-mode
+        // marker. Keep it briefly for the same page so that race does not
+        // turn into a permanent "No conversation ID" state.
+        pendingTemporaryConversationId = conversationId;
+        pendingTemporaryConversationUrl = location.href;
+        pendingTemporaryConversationAt = Date.now();
+      }
       return;
     }
 
@@ -271,6 +284,18 @@
         const id = extractConversationId(element.getAttribute(attribute), platform);
         if (id) return id;
       }
+    }
+
+    if (
+      !observedTemporaryConversationId &&
+      pendingTemporaryConversationId &&
+      pendingTemporaryConversationUrl === location.href &&
+      Date.now() - pendingTemporaryConversationAt <= 10000
+    ) {
+      observedTemporaryConversationId = pendingTemporaryConversationId;
+      pendingTemporaryConversationId = null;
+      pendingTemporaryConversationUrl = null;
+      pendingTemporaryConversationAt = 0;
     }
 
     return observedTemporaryConversationId;
@@ -1177,7 +1202,19 @@
   let lastTemporaryConversationId = null;
   setInterval(() => {
     const url = location.href;
-    if (url !== lastUrl) observedTemporaryConversationId = null;
+    if (url !== lastUrl) {
+      observedTemporaryConversationId = null;
+      pendingTemporaryConversationId = null;
+      pendingTemporaryConversationUrl = null;
+      pendingTemporaryConversationAt = 0;
+    } else if (
+      pendingTemporaryConversationId &&
+      Date.now() - pendingTemporaryConversationAt > 10000
+    ) {
+      pendingTemporaryConversationId = null;
+      pendingTemporaryConversationUrl = null;
+      pendingTemporaryConversationAt = 0;
+    }
     const platform = getPlatform();
     const shouldCheckTemporaryChat =
       url !== lastUrl ||
