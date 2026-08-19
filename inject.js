@@ -355,6 +355,153 @@
     return data;
   }
 
+  function isChatGPTTemporaryPage() {
+    try {
+      const value = new URL(window.location.href).searchParams.get('temporary-chat');
+      return value === '' || /^true$/i.test(value);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function hasChatGPTMessageContent(message) {
+    const parts = message?.content?.parts;
+    return (
+      (Array.isArray(parts) && parts.some(part => (
+        typeof part === 'string' ? part.trim().length > 0 : part != null
+      ))) ||
+      Boolean(message?.metadata?.command)
+    );
+  }
+
+  function hasChatGPTAssistantMessage(data) {
+    if (!data || !data.mapping || !data.current_node) return false;
+
+    const visited = new Set();
+    let lastMeaningfulMessage = null;
+    let nodeId = data.current_node;
+    while (nodeId && !visited.has(nodeId)) {
+      visited.add(nodeId);
+      const node = data.mapping[nodeId];
+      const message = node?.message;
+      if (message && message.author?.role && message.author.role !== 'system') {
+        lastMeaningfulMessage = message;
+      }
+      nodeId = node?.parent || null;
+    }
+
+    return lastMeaningfulMessage?.author?.role === 'assistant' &&
+      hasChatGPTMessageContent(lastMeaningfulMessage);
+  }
+
+  function getChatGPTDomText(node) {
+    let source = node;
+    try {
+      const clone = typeof node?.cloneNode === 'function' ? node.cloneNode(true) : null;
+      if (clone && typeof clone.querySelectorAll === 'function') {
+        for (const noisy of clone.querySelectorAll(
+          'button, svg, img, [aria-hidden="true"], [class*="sr-only" i], [class*="screen-reader" i], [aria-label*="copy" i], [aria-label*="regenerate" i], [data-testid*="copy" i], [data-testid*="regenerate" i]'
+        )) {
+          noisy.remove?.();
+        }
+        source = clone;
+      }
+    } catch (e) {}
+
+    return String(source?.innerText || source?.textContent || '')
+      .replace(/\r\n/g, '\n')
+      .trim();
+  }
+
+  function extractChatGPTTemporaryDomConversation(conversationId) {
+    const selectors = [
+      'main [data-message-author-role="user"]',
+      'main [data-message-author-role="assistant"]',
+      '[data-message-author-role="user"]',
+      '[data-message-author-role="assistant"]'
+    ];
+    const candidates = [];
+    const seen = new Set();
+
+    for (const selector of selectors) {
+      let nodes = [];
+      try {
+        nodes = Array.from(document.querySelectorAll(selector));
+      } catch (e) {}
+
+      for (const node of nodes) {
+        if (!node || seen.has(node)) continue;
+        const role = node.getAttribute?.('data-message-author-role');
+        const text = getChatGPTDomText(node);
+        if (!['user', 'assistant'].includes(role) || !text) continue;
+        if (candidates.some(candidate => candidate.node.contains?.(node))) continue;
+        for (let i = candidates.length - 1; i >= 0; i--) {
+          if (node.contains?.(candidates[i].node)) candidates.splice(i, 1);
+        }
+        seen.add(node);
+        candidates.push({ node, role, text });
+      }
+    }
+
+    candidates.sort((a, b) => {
+      if (typeof a.node.compareDocumentPosition !== 'function') return 0;
+      const position = a.node.compareDocumentPosition(b.node);
+      if (position & 4) return -1;
+      if (position & 2) return 1;
+      return 0;
+    });
+
+    if (!candidates.some(candidate => candidate.role === 'assistant')) {
+      throw new Error('Could not extract the ChatGPT assistant reply from the current page. Wait for the reply to finish, then try again.');
+    }
+
+    const mapping = {};
+    let parent = null;
+    let currentNode = null;
+    candidates.forEach((candidate, index) => {
+      const nodeId = `dom-${index}`;
+      mapping[nodeId] = {
+        id: nodeId,
+        parent,
+        message: {
+          id: nodeId,
+          author: { role: candidate.role },
+          content: { content_type: 'text', parts: [candidate.text] },
+          metadata: {}
+        }
+      };
+      parent = nodeId;
+      currentNode = nodeId;
+    });
+
+    const title = String(document.title || '')
+      .replace(/\s*[-|]\s*ChatGPT\s*$/i, '')
+      .trim() || 'ChatGPT Temporary Chat';
+    return {
+      conversation_id: conversationId,
+      title,
+      mapping,
+      current_node: currentNode,
+      extraction: 'dom',
+      integrity: {
+        status: 'probably-complete',
+        warnings: ['ChatGPT returned an incomplete temporary-chat record; export used the current page messages. Scroll through the full chat first if older turns are virtualized.']
+      }
+    };
+  }
+
+  async function recoverChatGPTTemporaryConversation(data, conversationId) {
+    if (!isChatGPTTemporaryPage() || hasChatGPTAssistantMessage(data)) return data;
+
+    try {
+      const freshData = await fetchConversation(conversationId);
+      if (hasChatGPTAssistantMessage(freshData)) return freshData;
+      data = freshData;
+    } catch (e) {}
+
+    return extractChatGPTTemporaryDomConversation(conversationId);
+  }
+
   // Helper function to fetch Claude conversation using page cookies/session
   async function fetchClaudeConversation(conversationId) {
     const orgResponse = await originalFetch('/api/organizations');
@@ -1612,6 +1759,10 @@
               data = await fetchConversation(conversationId);
             }
           }
+        }
+
+        if (platform === 'chatgpt') {
+          data = await recoverChatGPTTemporaryConversation(data, conversationId);
         }
 
         window.postMessage({

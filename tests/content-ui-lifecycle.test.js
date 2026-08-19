@@ -56,6 +56,7 @@ function loadContentScript(pathname, {
   let mountedContainer = null;
   let appendCount = 0;
   const postedMessages = [];
+  let clipboardText = null;
   let temporaryConversationLabel = temporaryConversationId
     ? `对话 chat-${temporaryConversationId}`
     : null;
@@ -146,7 +147,9 @@ function loadContentScript(pathname, {
     },
     navigator: {
       clipboard: {
-        writeText: async () => {}
+        writeText: async text => {
+          clipboardText = text;
+        }
       }
     },
     console,
@@ -218,6 +221,9 @@ function loadContentScript(pathname, {
     },
     get postedMessages() {
       return postedMessages;
+    },
+    get clipboardText() {
+      return clipboardText;
     }
   };
 }
@@ -472,6 +478,61 @@ test('uses the Gemini DOM export sentinel instead of requiring an ID', () => {
   assert.equal(page.postedMessages[0].type, 'OAI_EXPORT_REQUEST');
   assert.equal(page.postedMessages[0].conversationId, '__gemini_temp_dom__');
   assert.equal(page.postedMessages[0].platform, 'gemini');
+});
+
+test('keeps ChatGPT assistant replies when the temporary export returns a DOM payload', async () => {
+  const page = loadContentScript('/?temporary-chat=true', {
+    hostname: 'chatgpt.com',
+    temporaryConversationId: TEMPORARY_CONVERSATION_ID
+  });
+
+  page.makeDomReady();
+  page.receiveWindowMessage({
+    type: 'OAI_CONVERSATION_ID',
+    conversationId: TEMPORARY_CONVERSATION_ID,
+    token: SECURE_TOKEN
+  });
+  page.click('.btn-copy');
+
+  const request = page.postedMessages[0];
+  page.receiveWindowMessage({
+    type: 'OAI_EXPORT_RESPONSE',
+    conversationId: request.conversationId,
+    requestId: request.requestId,
+    token: SECURE_TOKEN,
+    success: true,
+    data: {
+      extraction: 'dom',
+      conversation_id: TEMPORARY_CONVERSATION_ID,
+      title: 'Temporary Chat',
+      current_node: 'assistant-node',
+      mapping: {
+        root: { id: 'root', parent: null, message: null },
+        'user-node': {
+          id: 'user-node',
+          parent: 'root',
+          message: {
+            id: 'user-message',
+            author: { role: 'user' },
+            content: { content_type: 'text', parts: ['hi'] }
+          }
+        },
+        'assistant-node': {
+          id: 'assistant-node',
+          parent: 'user-node',
+          message: {
+            id: 'assistant-message',
+            author: { role: 'assistant' },
+            content: { content_type: 'text', parts: ['Hi! How can I help?'] }
+          }
+        }
+      },
+      integrity: { status: 'probably-complete', warnings: [] }
+    }
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*Hi! How can I help\?/);
 });
 
 test('keeps Gemini temporary UI mounted while its batchexecute ID arrives', () => {

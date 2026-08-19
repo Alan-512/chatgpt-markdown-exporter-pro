@@ -199,6 +199,108 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
   assert.equal(messages[0].token, TOKEN);
 });
 
+test('recovers the visible ChatGPT assistant reply when a temporary payload is user-only', async () => {
+  const messages = [];
+  let messageHandler = null;
+  const userNode = {
+    textContent: 'hi',
+    getAttribute(name) {
+      return name === 'data-message-author-role' ? 'user' : null;
+    },
+    contains() { return false; },
+    compareDocumentPosition() { return 4; }
+  };
+  const assistantNode = {
+    textContent: 'Hi! How can I help?',
+    getAttribute(name) {
+      return name === 'data-message-author-role' ? 'assistant' : null;
+    },
+    contains() { return false; },
+    compareDocumentPosition() { return 2; }
+  };
+  const partialPayload = {
+    conversation_id: CONVERSATION_ID,
+    title: 'Temporary Chat',
+    current_node: 'user-node',
+    mapping: {
+      root: { id: 'root', parent: null, message: null },
+      'user-node': {
+        id: 'user-node',
+        parent: 'root',
+        message: {
+          id: 'user-message',
+          author: { role: 'user' },
+          content: { content_type: 'text', parts: ['hi'] }
+        }
+      }
+    }
+  };
+  const document = {
+    currentScript: { dataset: { token: TOKEN } },
+    title: 'ChatGPT',
+    querySelectorAll(selector) {
+      if (selector.includes('data-message-author-role="user"')) return [userNode];
+      if (selector.includes('data-message-author-role="assistant"')) return [assistantNode];
+      return [];
+    }
+  };
+  const response = {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    json: async () => partialPayload
+  };
+  const window = {
+    location: {
+      hostname: 'chatgpt.com',
+      pathname: '/',
+      search: '?temporary-chat=true',
+      href: `https://chatgpt.com/?temporary-chat=true`,
+      origin: 'https://chatgpt.com'
+    },
+    fetch: async url => (
+      url === '/api/auth/session'
+        ? { ok: true, json: async () => ({ accessToken: 'session-token' }) }
+        : response
+    ),
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener(type, callback) {
+      if (type === 'message') messageHandler = callback;
+    }
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document,
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await messageHandler({
+    source: window,
+    origin: window.location.origin,
+    data: {
+      type: 'OAI_EXPORT_REQUEST',
+      conversationId: CONVERSATION_ID,
+      platform: 'chatgpt',
+      requestId: 'chatgpt-dom-request',
+      token: TOKEN
+    }
+  });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, true);
+  assert.equal(messages[0].data.extraction, 'dom');
+  const currentMessage = messages[0].data.mapping[messages[0].data.current_node].message;
+  assert.equal(currentMessage.author.role, 'assistant');
+  assert.equal(currentMessage.content.parts[0], 'Hi! How can I help?');
+});
+
 test('emits a Gemini conversation ID from a batchexecute response', async () => {
   const messages = [];
   const response = createResponse(

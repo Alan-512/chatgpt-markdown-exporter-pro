@@ -536,18 +536,19 @@
     const mapping = data.mapping;
     const currentNodeId = data.current_node;
     const conversationId = getActiveConversationId() || data.conversation_id || '';
+    const domFallback = data.extraction === 'dom';
     
     const result = {
       conversationId: conversationId,
       title: data.title || 'ChatGPT Conversation',
       url: window.location.href,
       exportedAt: new Date().toISOString(),
-      source: 'network',
+      source: domFallback ? 'dom' : 'network',
       messages: [],
       raw: data,
       integrity: {
-        status: 'complete',
-        warnings: []
+        status: domFallback ? (data.integrity?.status || 'probably-complete') : 'complete',
+        warnings: Array.isArray(data.integrity?.warnings) ? data.integrity.warnings : []
       }
     };
 
