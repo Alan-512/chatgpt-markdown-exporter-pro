@@ -17,6 +17,8 @@ const PERPLEXITY_TEMPORARY_ID = 'temporary-thread-1';
 const SECURE_TOKEN = '00000000-0000-4000-8000-000000000000';
 
 function createNode() {
+  const listeners = new Map();
+  const children = new Map();
   return {
     dataset: {},
     style: {},
@@ -25,9 +27,18 @@ function createNode() {
       remove() {},
       toggle() { return true; }
     },
-    addEventListener() {},
+    addEventListener(type, callback) {
+      listeners.set(type, callback);
+    },
     contains() { return false; },
-    querySelector() { return createNode(); },
+    querySelector(selector) {
+      if (!children.has(selector)) children.set(selector, createNode());
+      return children.get(selector);
+    },
+    click() {
+      const callback = listeners.get('click');
+      callback?.({ stopPropagation() {} });
+    },
     remove() {}
   };
 }
@@ -44,6 +55,7 @@ function loadContentScript(pathname, {
   const intervalCallbacks = [];
   let mountedContainer = null;
   let appendCount = 0;
+  const postedMessages = [];
   let temporaryConversationLabel = temporaryConversationId
     ? `对话 chat-${temporaryConversationId}`
     : null;
@@ -114,7 +126,9 @@ function loadContentScript(pathname, {
       listeners.push(callback);
       windowListeners.set(type, listeners);
     },
-    postMessage() {}
+    postMessage(message) {
+      postedMessages.push(message);
+    }
   };
   window.window = window;
 
@@ -198,6 +212,12 @@ function loadContentScript(pathname, {
     },
     get appendCount() {
       return appendCount;
+    },
+    click(selector) {
+      mountedContainer?.querySelector(selector)?.click();
+    },
+    get postedMessages() {
+      return postedMessages;
     }
   };
 }
@@ -436,6 +456,22 @@ test('mounts Gemini temporary chat from its localized heading on the /app route'
   page.makeDomReady();
 
   assert.equal(page.appendCount, 1);
+});
+
+test('uses the Gemini DOM export sentinel instead of requiring an ID', () => {
+  const page = loadContentScript('/app', {
+    hostname: 'gemini.google.com',
+    temporaryMode: '临时对话',
+    temporaryModeTagName: 'h1',
+    temporaryConversationId: null
+  });
+
+  page.makeDomReady();
+  page.click('.btn-copy');
+
+  assert.equal(page.postedMessages[0].type, 'OAI_EXPORT_REQUEST');
+  assert.equal(page.postedMessages[0].conversationId, '__gemini_temp_dom__');
+  assert.equal(page.postedMessages[0].platform, 'gemini');
 });
 
 test('keeps Gemini temporary UI mounted while its batchexecute ID arrives', () => {

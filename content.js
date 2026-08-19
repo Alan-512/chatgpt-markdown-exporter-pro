@@ -74,7 +74,7 @@
         delete pendingRequests[requestId];
 
         // SPA Navigation check: Cancel if user navigated away while fetching
-        if (getActiveConversationId() !== request.conversationId) {
+        if (getExportConversationId() !== request.conversationId) {
           request.reject(new Error('Export cancelled: Navigation detected.'));
           return;
         }
@@ -287,32 +287,6 @@
     return directPattern.test(text) ? text : null;
   }
 
-  function hasGeminiMainMessages() {
-    const userSelector = [
-      'main user-query',
-      'user-query',
-      'main [data-message-author-role="user"]',
-      '[data-message-author-role="user"]',
-      'main [data-testid*="user-message" i]'
-    ].join(', ');
-    const assistantSelector = [
-      'main model-response',
-      'model-response',
-      'main [data-message-author-role="assistant"]',
-      '[data-message-author-role="assistant"]',
-      'main [data-testid*="model-response" i]',
-      'main [data-testid*="assistant-message" i]',
-      'main [data-testid*="response" i]'
-    ].join(', ');
-
-    try {
-      return document.querySelectorAll(userSelector).length > 0 &&
-        document.querySelectorAll(assistantSelector).length > 0;
-    } catch (e) {
-      return false;
-    }
-  }
-
   function getTemporaryConversationId(platform = getPlatform()) {
     const searchParams = new URL(window.location.href).searchParams;
     for (const queryKey of [
@@ -356,12 +330,10 @@
       }
     }
 
-    // Gemini temporary chats can have fully rendered messages while keeping
-    // the route at /app and exposing no stable ID in the DOM. Use a sentinel
-    // only when both user and assistant message nodes are present in the page;
-    // inject.js then exports those current-page nodes instead of guessing from
-    // sidebar links.
-    if (platform === 'gemini' && hasGeminiMainMessages()) {
+    // Gemini temporary chats stay on the new-chat route and may expose no
+    // stable ID at all. The inject layer handles this sentinel by reading the
+    // current page's message nodes, never the sidebar.
+    if (platform === 'gemini' && isTemporaryChat(platform)) {
       return GEMINI_DOM_FALLBACK_ID;
     }
 
@@ -426,6 +398,19 @@
     const match = window.location.pathname.match(/\/c\/([a-f0-9-]+)/);
     if (match) return match[1];
     return isTemporaryChat(platform) ? getTemporaryConversationId(platform) : null;
+  }
+
+  // Gemini temporary chats intentionally stay on the new-chat route and may
+  // never expose a conversation ID. Keep the DOM fallback authoritative for
+  // the export transaction even if provider-specific message selectors are
+  // delayed or changed after the UI is mounted.
+  function getExportConversationId() {
+    const platform = getPlatform();
+    const activeId = getActiveConversationId();
+    if (activeId) return activeId;
+    return platform === 'gemini' && isTemporaryChat(platform)
+      ? GEMINI_DOM_FALLBACK_ID
+      : null;
   }
 
   // Sanitize filename for downloading
@@ -1082,8 +1067,9 @@
   // Core handler for exporting
   async function performExport(format, action = 'download') {
     if (isExporting) return;
-    
-    const conversationId = getActiveConversationId();
+
+    const platform = getPlatform();
+    const conversationId = getExportConversationId();
     if (!conversationId) {
       setStatus('error', 'No conversation ID');
       return;
@@ -1092,7 +1078,6 @@
     isExporting = true;
     setStatus('loading', 'Loading data...');
     try {
-      const platform = getPlatform();
       const rawData = await requestConversationData(conversationId, platform);
       
       const includeThinkingCheckbox = document.getElementById('oai-exporter-include-thinking');
