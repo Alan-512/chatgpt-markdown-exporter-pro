@@ -25,6 +25,22 @@ function createResponse(body) {
   };
 }
 
+function createJsonResponse(payload) {
+  const body = JSON.stringify(payload);
+  return {
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    clone() {
+      return {
+        text: async () => body,
+        json: async () => payload
+      };
+    },
+    json: async () => payload
+  };
+}
+
 test('emits a conversation ID from a ChatGPT conversation stream response', async () => {
   const messages = [];
   const response = createResponse(
@@ -197,6 +213,83 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
   assert.equal(messages[0].type, 'OAI_CONVERSATION_ID');
   assert.equal(messages[0].conversationId, CONVERSATION_ID);
   assert.equal(messages[0].token, TOKEN);
+});
+
+test('refreshes a cached ChatGPT snapshot before exporting a long conversation', async () => {
+  const messages = [];
+  let messageHandler = null;
+  let conversationFetches = 0;
+  const partialPayload = {
+    conversation_id: CONVERSATION_ID,
+    title: 'Long Chat',
+    current_node: 'latest',
+    mapping: {
+      latest: { id: 'latest', parent: 'older', message: null }
+    }
+  };
+  const completePayload = {
+    ...partialPayload,
+    mapping: {
+      root: { id: 'root', parent: null, message: null },
+      older: { id: 'older', parent: 'root', message: null },
+      ...partialPayload.mapping
+    }
+  };
+  const window = {
+    location: {
+      hostname: 'chatgpt.com',
+      pathname: `/c/${CONVERSATION_ID}`,
+      search: '',
+      href: `https://chatgpt.com/c/${CONVERSATION_ID}`,
+      origin: 'https://chatgpt.com'
+    },
+    fetch: async url => {
+      if (url === '/api/auth/session') {
+        return createJsonResponse({ accessToken: 'session-token' });
+      }
+      conversationFetches += 1;
+      return createJsonResponse(conversationFetches === 1 ? partialPayload : completePayload);
+    },
+    postMessage(message) {
+      messages.push(message);
+    },
+    addEventListener(type, callback) {
+      if (type === 'message') messageHandler = callback;
+    }
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: { currentScript: { dataset: { token: TOKEN } } },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch(`/backend-api/conversation/${CONVERSATION_ID}?current_node=latest`, {
+    method: 'GET',
+    headers: { Authorization: 'Bearer session-token' }
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  await messageHandler({
+    source: window,
+    origin: window.location.origin,
+    data: {
+      type: 'OAI_EXPORT_REQUEST',
+      conversationId: CONVERSATION_ID,
+      platform: 'chatgpt',
+      requestId: 'long-chat-request',
+      token: TOKEN
+    }
+  });
+
+  const exportResponse = messages.find(message => message.type === 'OAI_EXPORT_RESPONSE');
+  assert.equal(conversationFetches, 2);
+  assert.equal(exportResponse.success, true);
+  assert.equal(exportResponse.data.mapping.older.parent, 'root');
 });
 
 test('recovers the visible ChatGPT assistant reply when a temporary payload is user-only', async () => {

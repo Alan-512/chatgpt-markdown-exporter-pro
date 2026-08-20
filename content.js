@@ -560,13 +560,25 @@
 
     // Traverse the conversation tree backwards from current leaf node to root
     const nodes = [];
+    const visited = new Set();
     let nodeId = currentNodeId;
     while (nodeId) {
-      const node = mapping[nodeId];
-      if (node) {
-        nodes.push(node);
+      if (visited.has(nodeId)) {
+        result.integrity.status = 'incomplete';
+        result.integrity.warnings.push(`Cycle detected in the active message path at node ${nodeId}.`);
+        break;
       }
-      nodeId = node ? node.parent : null;
+      visited.add(nodeId);
+
+      const node = mapping[nodeId];
+      if (!node) {
+        result.integrity.status = 'incomplete';
+        result.integrity.warnings.push(`Missing parent node ${nodeId} in the active message path.`);
+        break;
+      }
+
+      nodes.push(node);
+      nodeId = node.parent || null;
     }
     nodes.reverse(); // Convert to chronological order
 
@@ -641,14 +653,18 @@
     } else {
       // 2. Check if first message is from User
       if (messages[0].role !== 'user') {
-        result.integrity.status = 'probably-complete';
+        if (result.integrity.status === 'complete') {
+          result.integrity.status = 'probably-complete';
+        }
         result.integrity.warnings.push('Sequence anomaly: Conversation does not start with a User message.');
       }
 
       // 3. Check if last message leaves user hanging
       const lastMsg = messages[messages.length - 1];
       if (lastMsg.role === 'user') {
-        result.integrity.status = 'probably-complete';
+        if (result.integrity.status === 'complete') {
+          result.integrity.status = 'probably-complete';
+        }
         result.integrity.warnings.push('Sequence anomaly: Conversation ends with a User message (missing final response).');
       }
     }

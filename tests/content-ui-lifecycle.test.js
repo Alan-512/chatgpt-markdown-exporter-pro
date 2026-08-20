@@ -535,6 +535,42 @@ test('keeps ChatGPT assistant replies when the temporary export returns a DOM pa
   assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*Hi! How can I help\?/);
 });
 
+test('marks a broken ChatGPT active path as incomplete instead of silently truncating it', async () => {
+  const page = loadContentScript(`/c/${CONVERSATION_ID}`);
+
+  page.makeDomReady();
+  page.click('.btn-copy');
+
+  const request = page.postedMessages[0];
+  page.receiveWindowMessage({
+    type: 'OAI_EXPORT_RESPONSE',
+    conversationId: request.conversationId,
+    requestId: request.requestId,
+    token: SECURE_TOKEN,
+    success: true,
+    data: {
+      conversation_id: CONVERSATION_ID,
+      title: 'Partial Long Chat',
+      current_node: 'assistant-latest',
+      mapping: {
+        'assistant-latest': {
+          id: 'assistant-latest',
+          parent: 'missing-older-assistant',
+          message: {
+            id: 'assistant-latest',
+            author: { role: 'assistant' },
+            content: { content_type: 'text', parts: ['latest answer'] }
+          }
+        }
+      }
+    }
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(page.clipboardText, /\*\*Integrity Status:\*\* incomplete/);
+  assert.match(page.clipboardText, /Missing parent node missing-older-assistant/);
+});
+
 test('keeps Gemini temporary UI mounted while its batchexecute ID arrives', () => {
   const page = loadContentScript('/app', {
     hostname: 'gemini.google.com',

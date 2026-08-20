@@ -1740,24 +1740,20 @@
 
       try {
         let data = conversationCache[conversationId];
-        
-        // If data is missing, bypass cache and fetch fresh
-        if (!data) {
+
+        // ChatGPT can issue partial conversation GETs while navigating a long
+        // thread. Those responses still contain mapping/current_node and can
+        // overwrite the earlier full snapshot, so they are not authoritative
+        // for export. Always request the unparameterized full tree here.
+        if (!platform || platform === 'chatgpt') {
+          data = await fetchConversation(conversationId);
+        } else if (!data) {
           if (platform === 'claude') {
             data = await fetchClaudeConversation(conversationId);
           } else if (platform === 'gemini') {
             data = await fetchGeminiConversation(conversationId);
           } else if (platform === 'perplexity') {
             data = await fetchPerplexityConversation(conversationId);
-          } else {
-            data = await fetchConversation(conversationId);
-          }
-        } else {
-          // If we have cached data but it's ChatGPT and incomplete, refresh
-          if (!platform || platform === 'chatgpt') {
-            if (!data.mapping || !data.current_node) {
-              data = await fetchConversation(conversationId);
-            }
           }
         }
 
