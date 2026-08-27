@@ -48,15 +48,19 @@ function loadContentScript(pathname, {
   temporaryConversationId = null,
   temporaryConversationAttribute = 'data-conversation-id',
   temporaryMode = null,
-  temporaryModeTagName = 'div'
+  temporaryModeTagName = 'div',
+  clipboardWriteError = null
 } = {}) {
   const documentListeners = new Map();
   const windowListeners = new Map();
   const intervalCallbacks = [];
+  const scheduledTimeouts = new Map();
+  let nextTimeoutId = 0;
   let mountedContainer = null;
   let appendCount = 0;
   const postedMessages = [];
   let clipboardText = null;
+  let focusedNode = null;
   let temporaryConversationLabel = temporaryConversationId
     ? `对话 chat-${temporaryConversationId}`
     : null;
@@ -76,7 +80,21 @@ function loadContentScript(pathname, {
     body: null,
     head: null,
     documentElement: { appendChild() {} },
-    createElement() { return createNode(); },
+    createElement() {
+      const node = createNode();
+      node.focus = () => { focusedNode = node; };
+      node.select = () => {};
+      node.setAttribute = () => {};
+      return node;
+    },
+    get activeElement() {
+      return focusedNode;
+    },
+    execCommand(command) {
+      if (command !== 'copy' || !focusedNode) return false;
+      clipboardText = focusedNode.value;
+      return true;
+    },
     getElementById(id) {
       return mountedContainer && mountedContainer.id === id
         ? mountedContainer
@@ -148,6 +166,7 @@ function loadContentScript(pathname, {
     navigator: {
       clipboard: {
         writeText: async text => {
+          if (clipboardWriteError) throw clipboardWriteError;
           clipboardText = text;
         }
       }
@@ -159,8 +178,15 @@ function loadContentScript(pathname, {
       intervalCallbacks.push(callback);
       return intervalCallbacks.length;
     },
-    setTimeout() { return 1; },
-    clearTimeout() {}
+    setTimeout(callback, delayMs) {
+      const id = ++nextTimeoutId;
+      scheduledTimeouts.set(id, { callback, delayMs, cancelled: false });
+      return id;
+    },
+    clearTimeout(id) {
+      const timeout = scheduledTimeouts.get(id);
+      if (timeout) timeout.cancelled = true;
+    }
   }, { filename: 'content.js' });
 
   function dispatchDocumentEvent(type) {
@@ -212,6 +238,13 @@ function loadContentScript(pathname, {
     },
     poll() {
       for (const callback of intervalCallbacks) callback();
+    },
+    advanceTime(ms) {
+      for (const [id, timeout] of scheduledTimeouts) {
+        if (timeout.cancelled || timeout.delayMs > ms) continue;
+        scheduledTimeouts.delete(id);
+        timeout.callback();
+      }
     },
     get appendCount() {
       return appendCount;
@@ -533,6 +566,99 @@ test('keeps ChatGPT assistant replies when the temporary export returns a DOM pa
 
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*Hi! How can I help\?/);
+});
+
+test('keeps a slow ChatGPT export alive past the initial eight-second window', async () => {
+  const page = loadContentScript(`/c/${CONVERSATION_ID}`);
+
+  page.makeDomReady();
+  page.click('.btn-copy');
+
+  const request = page.postedMessages[0];
+  page.advanceTime(8001);
+  page.receiveWindowMessage({
+    type: 'OAI_EXPORT_RESPONSE',
+    conversationId: request.conversationId,
+    requestId: request.requestId,
+    token: SECURE_TOKEN,
+    success: true,
+    data: {
+      conversation_id: CONVERSATION_ID,
+      title: 'Slow Chat',
+      current_node: 'assistant-node',
+      mapping: {
+        root: { id: 'root', parent: null, message: null },
+        'user-node': {
+          id: 'user-node',
+          parent: 'root',
+          message: {
+            id: 'user-message',
+            author: { role: 'user' },
+            content: { content_type: 'text', parts: ['hi'] }
+          }
+        },
+        'assistant-node': {
+          id: 'assistant-node',
+          parent: 'user-node',
+          message: {
+            id: 'assistant-message',
+            author: { role: 'assistant' },
+            content: { content_type: 'text', parts: ['slow response'] }
+          }
+        }
+      }
+    }
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*slow response/);
+});
+
+test('falls back to a focused textarea when Clipboard API rejects an unfocused document', async () => {
+  const page = loadContentScript(`/c/${CONVERSATION_ID}`, {
+    clipboardWriteError: new Error('Document is not focused.')
+  });
+
+  page.makeDomReady();
+  page.click('.btn-copy');
+
+  const request = page.postedMessages[0];
+  page.receiveWindowMessage({
+    type: 'OAI_EXPORT_RESPONSE',
+    conversationId: request.conversationId,
+    requestId: request.requestId,
+    token: SECURE_TOKEN,
+    success: true,
+    data: {
+      conversation_id: CONVERSATION_ID,
+      title: 'Clipboard Fallback',
+      current_node: 'assistant-node',
+      mapping: {
+        root: { id: 'root', parent: null, message: null },
+        'user-node': {
+          id: 'user-node',
+          parent: 'root',
+          message: {
+            id: 'user-message',
+            author: { role: 'user' },
+            content: { content_type: 'text', parts: ['hi'] }
+          }
+        },
+        'assistant-node': {
+          id: 'assistant-node',
+          parent: 'user-node',
+          message: {
+            id: 'assistant-message',
+            author: { role: 'assistant' },
+            content: { content_type: 'text', parts: ['copied through fallback'] }
+          }
+        }
+      }
+    }
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*copied through fallback/);
 });
 
 test('marks a broken ChatGPT active path as incomplete instead of silently truncating it', async () => {

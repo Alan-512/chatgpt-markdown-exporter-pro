@@ -29,6 +29,11 @@
   // Active requests transaction map (prevents promise collisions and SPA race conditions)
   const pendingRequests = {};
 
+  // Complete conversation payloads can take longer than the initial page
+  // request, especially for long chats. Keep a bounded wait so slow valid
+  // exports are not rejected while a missing injector still fails clearly.
+  const EXPORT_REQUEST_TIMEOUT_MS = 30000;
+
   // Helper utility for asynchronous delays
   const delay = ms => new Promise(res => setTimeout(res, ms));
 
@@ -98,9 +103,9 @@
       const timeoutId = setTimeout(() => {
         if (pendingRequests[requestId]) {
           delete pendingRequests[requestId];
-          reject(new Error('Request timed out. Please refresh the page and try again.'));
+          reject(new Error(`Request timed out after ${EXPORT_REQUEST_TIMEOUT_MS / 1000} seconds. Please refresh the page and try again.`));
         }
-      }, 8000);
+      }, EXPORT_REQUEST_TIMEOUT_MS);
 
       pendingRequests[requestId] = { resolve, reject, timeoutId, conversationId };
       window.postMessage({ 
@@ -1079,6 +1084,45 @@
     URL.revokeObjectURL(url);
   }
 
+  async function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+    } catch (error) {
+      console.warn('[Exporter] Clipboard API unavailable; trying focused fallback.', error);
+    }
+
+    if (!document.body || typeof document.createElement !== 'function') {
+      throw new Error('Unable to copy Markdown to the clipboard. Please use Export Markdown instead.');
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute?.('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+
+    const previousActiveElement = document.activeElement;
+    let copied = false;
+    try {
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+    } finally {
+      textarea.remove();
+      previousActiveElement?.focus?.({ preventScroll: true });
+    }
+
+    if (!copied) {
+      throw new Error('Unable to copy Markdown to the clipboard. Please use Export Markdown instead.');
+    }
+  }
+
   let isExporting = false;
 
   // Core handler for exporting
@@ -1127,7 +1171,7 @@
           triggerDownload(markdown, filename, 'text/markdown;charset=utf-8');
           setStatus('ready', `Exported MD! (${model.integrity.status || 'complete'})`);
         } else if (action === 'copy') {
-          await navigator.clipboard.writeText(markdown);
+          await copyTextToClipboard(markdown);
           setStatus('ready', 'Copied to clipboard!');
         }
       } else if (format === 'json') {
