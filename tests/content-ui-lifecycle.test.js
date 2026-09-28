@@ -49,7 +49,8 @@ function loadContentScript(pathname, {
   temporaryConversationAttribute = 'data-conversation-id',
   temporaryMode = null,
   temporaryModeTagName = 'div',
-  clipboardWriteError = null
+  clipboardWriteError = null,
+  injectorReady = true
 } = {}) {
   const documentListeners = new Map();
   const windowListeners = new Map();
@@ -189,6 +190,17 @@ function loadContentScript(pathname, {
     }
   }, { filename: 'content.js' });
 
+  if (injectorReady) {
+    for (const callback of windowListeners.get('message') || []) {
+      callback({
+        source: window,
+        origin: location.origin,
+        data: { type: 'OAI_INJECTOR_READY', token: SECURE_TOKEN }
+      });
+    }
+  }
+  postedMessages.length = 0;
+
   function dispatchDocumentEvent(type) {
     const listeners = documentListeners.get(type) || [];
     documentListeners.set(
@@ -257,6 +269,9 @@ function loadContentScript(pathname, {
     },
     get clipboardText() {
       return clipboardText;
+    },
+    get statusText() {
+      return mountedContainer?.querySelector('.oai-exporter-status-text').innerText;
     }
   };
 }
@@ -568,14 +583,18 @@ test('keeps ChatGPT assistant replies when the temporary export returns a DOM pa
   assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*Hi! How can I help\?/);
 });
 
-test('keeps a slow ChatGPT export alive past the initial eight-second window', async () => {
-  const page = loadContentScript(`/c/${CONVERSATION_ID}`);
+test('starts an export after injector readiness and accepts data after 30 seconds', async () => {
+  const page = loadContentScript(`/c/${CONVERSATION_ID}`, { injectorReady: false });
 
   page.makeDomReady();
   page.click('.btn-copy');
 
-  const request = page.postedMessages[0];
-  page.advanceTime(8001);
+  assert.equal(page.postedMessages.some(message => message.type === 'OAI_EXPORT_REQUEST'), false);
+  page.receiveWindowMessage({ type: 'OAI_INJECTOR_READY', token: SECURE_TOKEN });
+
+  const request = page.postedMessages.find(message => message.type === 'OAI_EXPORT_REQUEST');
+  assert.ok(request);
+  page.advanceTime(30001);
   page.receiveWindowMessage({
     type: 'OAI_EXPORT_RESPONSE',
     conversationId: request.conversationId,
@@ -612,6 +631,19 @@ test('keeps a slow ChatGPT export alive past the initial eight-second window', a
 
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.match(page.clipboardText, /\*\*ChatGPT:\*\*[\s\S]*slow response/);
+});
+
+test('reports an unavailable injector promptly without sending an export request', async () => {
+  const page = loadContentScript(`/c/${CONVERSATION_ID}`, { injectorReady: false });
+
+  page.makeDomReady();
+  page.click('.btn-copy');
+  page.advanceTime(5000);
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.match(page.statusText, /could not connect to the page/i);
+  page.receiveWindowMessage({ type: 'OAI_INJECTOR_READY', token: SECURE_TOKEN });
+  assert.equal(page.postedMessages.some(message => message.type === 'OAI_EXPORT_REQUEST'), false);
 });
 
 test('falls back to a focused textarea when Clipboard API rejects an unfocused document', async () => {

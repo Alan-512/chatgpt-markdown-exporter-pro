@@ -1,5 +1,5 @@
 (function() {
-  const secureToken = document.currentScript ? document.currentScript.dataset.token : null;
+  const secureToken = crypto.randomUUID();
   const conversationCache = {};
   const PERPLEXITY_LAST_CACHE_KEY = '__perplexity_last_conversation__';
   const CHATGPT_CONVERSATION_ID_PATTERN = /(?:["'](?:conversation_id|conversationId)["']\s*:\s*["']|(?:^|[?&\s])(?:conversation_id|conversationId)=)([a-f0-9-]+)/gi;
@@ -18,6 +18,8 @@
   const GEMINI_CONVERSATION_ID_PATTERN = /\bc_[a-zA-Z0-9_-]{8,}\b/g;
   const GEMINI_DOM_FALLBACK_ID = '__gemini_temp_dom__';
   const emittedConversationIds = new Set();
+  const earlyConversationIds = [];
+  let contentReady = false;
   let capturedToken = null;
 
   function emitConversationId(conversationId, platform = 'chatgpt') {
@@ -31,6 +33,8 @@
     const cacheKey = `${platform}:${conversationId}`;
     if (emittedConversationIds.has(cacheKey)) return;
     emittedConversationIds.add(cacheKey);
+
+    if (!contentReady) earlyConversationIds.push({ conversationId, platform });
 
     window.postMessage({
       type: 'OAI_CONVERSATION_ID',
@@ -1716,9 +1720,23 @@
     if (event.source !== window || event.origin !== window.location.origin) return;
     
     const message = event.data;
+    if (message && message.type === 'OAI_INJECTOR_PING') {
+      contentReady = true;
+      window.postMessage({ type: 'OAI_INJECTOR_READY', token: secureToken }, window.location.origin);
+      for (const { conversationId, platform } of earlyConversationIds) {
+        window.postMessage({
+          type: 'OAI_CONVERSATION_ID',
+          conversationId,
+          platform,
+          token: secureToken
+        }, window.location.origin);
+      }
+      earlyConversationIds.length = 0;
+      return;
+    }
+
     if (message && message.type === 'OAI_EXPORT_REQUEST') {
-      // Security Check: Verify shared token to prevent eavesdropping and spoofing
-      if (!secureToken || message.token !== secureToken) return;
+      if (message.token !== secureToken) return;
 
       const { conversationId, platform, requestId } = message;
 
@@ -1782,5 +1800,6 @@
     }
   });
 
-  console.log('[Exporter Inject] Successfully initialized secure window.fetch hooks.');
+  window.postMessage({ type: 'OAI_INJECTOR_READY', token: secureToken }, window.location.origin);
+  console.log('[Exporter Inject] Initialized window.fetch hooks.');
 })();

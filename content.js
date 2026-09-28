@@ -1,19 +1,5 @@
 (function() {
-  // Generate a cryptographically secure token for cross-world message passing validation
-  const secureToken = (typeof crypto !== 'undefined' && crypto.randomUUID) 
-    ? crypto.randomUUID() 
-    : Math.random().toString(36).substring(2) + Date.now().toString(36);
-
-  // Dynamically inject inject.js at document_start to establish fetch hooks in the MAIN world
-  try {
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('inject.js');
-    script.dataset.token = secureToken;
-    (document.head || document.documentElement).appendChild(script);
-    script.remove(); // Remove tag immediately to prevent page scripts from inspecting it
-  } catch (e) {
-    console.error('[Exporter] Failed to inject network interceptor:', e);
-  }
+  let secureToken = null;
 
   let container = null;
   let fab = null;
@@ -29,10 +15,36 @@
   // Active requests transaction map (prevents promise collisions and SPA race conditions)
   const pendingRequests = {};
 
-  // Complete conversation payloads can take longer than the initial page
-  // request, especially for long chats. Keep a bounded wait so slow valid
-  // exports are not rejected while a missing injector still fails clearly.
-  const EXPORT_REQUEST_TIMEOUT_MS = 30000;
+  const INJECTOR_READY_TIMEOUT_MS = 5000;
+  const EXPORT_REQUEST_TIMEOUT_MS = 120000;
+
+  function rejectPendingRequest(requestId, message) {
+    const request = pendingRequests[requestId];
+    if (!request) return;
+    clearTimeout(request.timeoutId);
+    delete pendingRequests[requestId];
+    request.reject(new Error(message));
+  }
+
+  function sendExportRequest(requestId) {
+    const request = pendingRequests[requestId];
+    if (!request || request.sent || !secureToken) return;
+    clearTimeout(request.timeoutId);
+    request.sent = true;
+    request.timeoutId = setTimeout(() => {
+      rejectPendingRequest(
+        requestId,
+        `Conversation data did not arrive within ${EXPORT_REQUEST_TIMEOUT_MS / 1000} seconds. Please try again.`
+      );
+    }, EXPORT_REQUEST_TIMEOUT_MS);
+    window.postMessage({
+      type: 'OAI_EXPORT_REQUEST',
+      conversationId: request.conversationId,
+      platform: request.platform,
+      requestId,
+      token: secureToken
+    }, window.location.origin);
+  }
 
   // Helper utility for asynchronous delays
   const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -42,6 +54,13 @@
     if (event.source !== window || event.origin !== window.location.origin) return;
     
     const message = event.data;
+    if (message && message.type === 'OAI_INJECTOR_READY') {
+      if (typeof message.token !== 'string' || !message.token) return;
+      secureToken = message.token;
+      for (const requestId of Object.keys(pendingRequests)) sendExportRequest(requestId);
+      return;
+    }
+
     if (message && message.type === 'OAI_CONVERSATION_ID') {
       // Security Check: Ignore conversation IDs that were not emitted by inject.js.
       const platform = getPlatform();
@@ -101,22 +120,16 @@
 
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        if (pendingRequests[requestId]) {
-          delete pendingRequests[requestId];
-          reject(new Error(`Request timed out after ${EXPORT_REQUEST_TIMEOUT_MS / 1000} seconds. Please refresh the page and try again.`));
-        }
-      }, EXPORT_REQUEST_TIMEOUT_MS);
+        rejectPendingRequest(requestId, 'Exporter could not connect to the page. Please refresh the page and try again.');
+      }, INJECTOR_READY_TIMEOUT_MS);
 
-      pendingRequests[requestId] = { resolve, reject, timeoutId, conversationId };
-      window.postMessage({ 
-        type: 'OAI_EXPORT_REQUEST', 
-        conversationId, 
-        platform, 
-        requestId,
-        token: secureToken 
-      }, window.location.origin);
+      pendingRequests[requestId] = { resolve, reject, timeoutId, conversationId, platform, sent: false };
+      if (secureToken) sendExportRequest(requestId);
+      else window.postMessage({ type: 'OAI_INJECTOR_PING' }, window.location.origin);
     });
   }
+
+  window.postMessage({ type: 'OAI_INJECTOR_PING' }, window.location.origin);
 
   // Get active platform
   function getPlatform() {

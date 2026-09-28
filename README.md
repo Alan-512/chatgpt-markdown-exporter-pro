@@ -21,7 +21,7 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 - **Clean Metadata**: Archive metadata stays available, while `Integrity Status` is shown only when it is not `complete`.
 - **Readable Media Placeholders**: Replaces internal asset pointer strings with clean placeholders like `[Image attached]`.
 - **Dynamic Author Labeling**: Dynamically maps chat turns to the correct platform name (e.g., `**Claude:**`, `**Gemini:**`, `**ChatGPT:**`).
-- **Hardened Security**: Communication between worlds is secured using a dynamically generated cryptographic session token, preventing third-party script eavesdropping or CSRF spoofing. Validates conversation IDs to prevent path traversal.
+- **Message Validation**: Cross-world messages check their origin and a per-page request token. Conversation IDs are validated before API requests.
 - **Rich Formatting**: Handles code interpreter outputs, LaTeX equations, attachments, and generated images.
 - **Privacy**: 100% local. Runs entirely in your browser. No data ever leaves your machine.
 
@@ -55,8 +55,8 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 
 ## 📂 File Structure
 
-* `manifest.json`: Configuration and script declaration. Exposes `inject.js` as a web accessible resource and injects `content.js` at `document_start`.
-* `inject.js`: Injected dynamically in the `MAIN` world. Hooks `window.fetch` and handles internal API, `batchexecute` RPC fetches for Claude/Gemini, and Perplexity layered extraction.
-* `content.js`: Runs in the `ISOLATED` world. Dynamically injects `inject.js` with a unique shared token, handles the UI overlay, normalizes platform payloads, and generates files.
+* `manifest.json`: Declares `inject.js` in `MAIN` and `content.js` in `ISOLATED`, both at `document_start`.
+* `inject.js`: Hooks `window.fetch` in the page world and handles internal API, `batchexecute` RPC fetches for Claude/Gemini, and Perplexity layered extraction.
+* `content.js`: Runs in the `ISOLATED` world, checks injector readiness, handles the UI overlay, normalizes platform payloads, and generates files.
 * `styles.css`: CSS code for the floating button and glassmorphic popup card.
 

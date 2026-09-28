@@ -14,6 +14,15 @@ const CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const GEMINI_CONVERSATION_ID = 'c_77ab2f6b9faa3039';
 const GEMINI_DOM_FALLBACK_ID = '__gemini_temp_dom__';
 
+test('registers the page interceptor declaratively before the isolated UI', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'manifest.json'), 'utf8'));
+  assert.equal(manifest.content_scripts[0].js[0], 'inject.js');
+  assert.equal(manifest.content_scripts[0].world, 'MAIN');
+  assert.equal(manifest.content_scripts[0].run_at, 'document_start');
+  assert.equal(manifest.content_scripts[1].js[0], 'content.js');
+  assert.equal(manifest.content_scripts[1].world, 'ISOLATED');
+});
+
 function createResponse(body) {
   return {
     clone() {
@@ -41,6 +50,44 @@ function createJsonResponse(payload) {
   };
 }
 
+test('replays an early conversation ID when the isolated script pings the injector', async () => {
+  const messages = [];
+  let messageHandler;
+  const window = {
+    location: { hostname: 'chatgpt.com', origin: 'https://chatgpt.com' },
+    fetch: async () => createResponse(`data: {"conversation_id":"${CONVERSATION_ID}"}\n\ndata: [DONE]\n`),
+    postMessage(message) { messages.push(message); },
+    addEventListener(type, callback) {
+      if (type === 'message') messageHandler = callback;
+    }
+  };
+
+  vm.runInNewContext(injectScript, {
+    window,
+    document: {},
+    crypto: { randomUUID: () => TOKEN },
+    Headers,
+    URL,
+    console: { log() {}, error() {} },
+    setTimeout,
+    clearTimeout
+  }, { filename: 'inject.js' });
+
+  await window.fetch('/backend-api/conversation', { method: 'POST' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  messages.length = 0;
+  await messageHandler({
+    source: window,
+    origin: window.location.origin,
+    data: { type: 'OAI_INJECTOR_PING' }
+  });
+
+  assert.equal(messages[0].type, 'OAI_INJECTOR_READY');
+  assert.equal(messages[0].token, TOKEN);
+  assert.equal(messages[1].type, 'OAI_CONVERSATION_ID');
+  assert.equal(messages[1].conversationId, CONVERSATION_ID);
+});
+
 test('emits a conversation ID from a ChatGPT conversation stream response', async () => {
   const messages = [];
   const response = createResponse(
@@ -53,14 +100,15 @@ test('emits a conversation ID from a ChatGPT conversation stream response', asyn
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -89,14 +137,15 @@ test('emits a conversation ID from the current ChatGPT f/conversation endpoint',
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -123,14 +172,15 @@ test('emits a conversation ID when ChatGPT passes a Request-like POST object', a
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -158,14 +208,15 @@ test('emits a conversation ID from a ChatGPT backend request body', async () => 
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -192,14 +243,15 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -251,7 +303,7 @@ test('refreshes a cached ChatGPT snapshot before exporting a long conversation',
       return createJsonResponse(conversationFetches === 1 ? partialPayload : completePayload);
     },
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener(type, callback) {
       if (type === 'message') messageHandler = callback;
@@ -259,8 +311,9 @@ test('refreshes a cached ChatGPT snapshot before exporting a long conversation',
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -357,7 +410,7 @@ test('recovers the visible ChatGPT assistant reply when a temporary payload is u
         : response
     ),
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener(type, callback) {
       if (type === 'message') messageHandler = callback;
@@ -365,6 +418,7 @@ test('recovers the visible ChatGPT assistant reply when a temporary payload is u
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
     document,
     Headers,
@@ -406,14 +460,15 @@ test('emits a Gemini conversation ID from a batchexecute response', async () => 
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -446,14 +501,15 @@ test('emits a Gemini conversation ID from a StreamGenerate response', async () =
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -484,14 +540,15 @@ test('does not use the first Gemini sidebar conversation as the active chat ID',
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -546,7 +603,7 @@ test('exports the current Gemini temporary DOM when no conversation ID exists', 
     },
     fetch: async () => ({ ok: false }),
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener(type, callback) {
       if (type === 'message') messageHandler = callback;
@@ -554,6 +611,7 @@ test('exports the current Gemini temporary DOM when no conversation ID exists', 
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
     document,
     Headers,
@@ -596,14 +654,15 @@ test('emits a Claude conversation ID from a conversation API request', async () 
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
@@ -631,14 +690,15 @@ test('emits a Perplexity conversation ID from a thread response', async () => {
     },
     fetch: async () => response,
     postMessage(message) {
-      messages.push(message);
+      if (message.type !== 'OAI_INJECTOR_READY') messages.push(message);
     },
     addEventListener() {}
   };
 
   vm.runInNewContext(injectScript, {
+    crypto: { randomUUID: () => TOKEN },
     window,
-    document: { currentScript: { dataset: { token: TOKEN } } },
+    document: {},
     Headers,
     URL,
     console: { log() {}, error() {} },
