@@ -11,7 +11,7 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 - **Instant Export**: No scrolling, no waiting. Click and download immediately.
 - **High Integrity**: Prefers complete internal payloads and clearly marks fallback exports with integrity warnings.
 - **Multi-Platform Support**:
-  - **ChatGPT**: Intercepts ChatGPT's internal backend API responses containing the complete conversation tree.
+  - **ChatGPT**: Fetches the complete conversation tree when exporting. Live replies are observed only until their conversation ID is found, then the observation stream is released.
   - **Claude.ai**: Queries Claude's organization-scoped conversation API.
   - **Gemini**: Direct query to Gemini's internal `batchexecute` RPC endpoint (`hNvQHb`) from the page context, retrieving up to 1000 messages in a single fast request.
   - **Perplexity**: Uses layered extraction for changing Perplexity routes and APIs: cached internal JSON first, hydration data second, and visible thread DOM as a final fallback.
@@ -21,7 +21,7 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 - **Clean Metadata**: Archive metadata stays available, while `Integrity Status` is shown only when it is not `complete`.
 - **Readable Media Placeholders**: Replaces internal asset pointer strings with clean placeholders like `[Image attached]`.
 - **Dynamic Author Labeling**: Dynamically maps chat turns to the correct platform name (e.g., `**Claude:**`, `**Gemini:**`, `**ChatGPT:**`).
-- **Hardened Security**: Communication between worlds is secured using a dynamically generated cryptographic session token, preventing third-party script eavesdropping or CSRF spoofing. Validates conversation IDs to prevent path traversal.
+- **Message Validation**: Cross-world messages check their origin and a per-page request token. Conversation IDs are validated before API requests.
 - **Rich Formatting**: Handles code interpreter outputs, LaTeX equations, attachments, and generated images.
 - **Privacy**: 100% local. Runs entirely in your browser. No data ever leaves your machine.
 
@@ -34,6 +34,8 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 3. Enable **Developer mode** using the toggle in the top-right corner.
 4. Click **Load unpacked** in the top-left corner.
 5. Select the folder containing these files.
+
+No build is required. After updating an unpacked installation, click **Reload** on its extension card, then refresh the ChatGPT tab so it uses the updated scripts.
 
 ---
 
@@ -55,8 +57,8 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 
 ## 📂 File Structure
 
-* `manifest.json`: Configuration and script declaration. Exposes `inject.js` as a web accessible resource and injects `content.js` at `document_start`.
-* `inject.js`: Injected dynamically in the `MAIN` world. Hooks `window.fetch` and handles internal API, `batchexecute` RPC fetches for Claude/Gemini, and Perplexity layered extraction.
-* `content.js`: Runs in the `ISOLATED` world. Dynamically injects `inject.js` with a unique shared token, handles the UI overlay, normalizes platform payloads, and generates files.
+* `manifest.json`: Declares `inject.js` in `MAIN` and `content.js` in `ISOLATED`, both at `document_start`.
+* `inject.js`: Hooks `window.fetch` in the page world and handles internal API, `batchexecute` RPC fetches for Claude/Gemini, and Perplexity layered extraction.
+* `content.js`: Runs in the `ISOLATED` world, checks injector readiness, handles the UI overlay, normalizes platform payloads, and generates files.
 * `styles.css`: CSS code for the floating button and glassmorphic popup card.
 
