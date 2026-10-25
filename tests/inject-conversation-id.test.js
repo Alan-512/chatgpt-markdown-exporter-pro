@@ -24,30 +24,11 @@ test('registers the page interceptor declaratively before the isolated UI', () =
 });
 
 function createResponse(body) {
-  return {
-    clone() {
-      return {
-        text: async () => body,
-        json: async () => ({})
-      };
-    }
-  };
+  return new Response(body);
 }
 
 function createJsonResponse(payload) {
-  const body = JSON.stringify(payload);
-  return {
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    clone() {
-      return {
-        text: async () => body,
-        json: async () => payload
-      };
-    },
-    json: async () => payload
-  };
+  return Response.json(payload);
 }
 
 test('replays an early conversation ID when the isolated script pings the injector', async () => {
@@ -67,6 +48,7 @@ test('replays an early conversation ID when the isolated script pings the inject
     document: {},
     crypto: { randomUUID: () => TOKEN },
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -110,6 +92,7 @@ test('emits a conversation ID from a ChatGPT conversation stream response', asyn
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -147,6 +130,7 @@ test('emits a conversation ID from the current ChatGPT f/conversation endpoint',
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -182,6 +166,7 @@ test('emits a conversation ID when ChatGPT passes a Request-like POST object', a
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -218,6 +203,7 @@ test('emits a conversation ID from a ChatGPT backend request body', async () => 
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -253,6 +239,7 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -267,7 +254,7 @@ test('emits a conversation ID from a ChatGPT conversation GET request', async ()
   assert.equal(messages[0].token, TOKEN);
 });
 
-test('refreshes a cached ChatGPT snapshot before exporting a long conversation', async () => {
+test('fetches the complete ChatGPT tree on export after a partial page response', async () => {
   const messages = [];
   let messageHandler = null;
   let conversationFetches = 0;
@@ -315,6 +302,7 @@ test('refreshes a cached ChatGPT snapshot before exporting a long conversation',
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -422,6 +410,7 @@ test('recovers the visible ChatGPT assistant reply when a temporary payload is u
     window,
     document,
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -470,6 +459,7 @@ test('emits a Gemini conversation ID from a batchexecute response', async () => 
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -511,6 +501,7 @@ test('emits a Gemini conversation ID from a StreamGenerate response', async () =
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -550,6 +541,7 @@ test('does not use the first Gemini sidebar conversation as the active chat ID',
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -615,6 +607,7 @@ test('exports the current Gemini temporary DOM when no conversation ID exists', 
     window,
     document,
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -664,6 +657,7 @@ test('emits a Claude conversation ID from a conversation API request', async () 
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,
@@ -700,6 +694,7 @@ test('emits a Perplexity conversation ID from a thread response', async () => {
     window,
     document: {},
     Headers,
+    TextDecoder,
     URL,
     console: { log() {}, error() {} },
     setTimeout,

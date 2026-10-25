@@ -2,7 +2,8 @@
   const secureToken = crypto.randomUUID();
   const conversationCache = {};
   const PERPLEXITY_LAST_CACHE_KEY = '__perplexity_last_conversation__';
-  const CHATGPT_CONVERSATION_ID_PATTERN = /(?:["'](?:conversation_id|conversationId)["']\s*:\s*["']|(?:^|[?&\s])(?:conversation_id|conversationId)=)([a-f0-9-]+)/gi;
+  const CHATGPT_CONVERSATION_ID_PATTERN = /["'](?:conversation_id|conversationId)["']\s*:\s*["']([a-f0-9-]+)["']|(?:^|[?&\s])(?:conversation_id|conversationId)=([a-f0-9-]+)(?=$|[&#\s])/gi;
+  const CHATGPT_STREAM_ID_TAIL_LENGTH = 512;
   const CHATGPT_CONVERSATION_URL_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation(?:[\/?#]|$)/i;
   const CHATGPT_CONVERSATION_ROUTE_PATTERN = /\/backend-api\/(?:[^\/?#]+\/)*conversation\/([a-f0-9-]+)(?:[\/?#]|$)/i;
   const CLAUDE_CONVERSATION_URL_PATTERN = /\/api\/organizations\/[^\/?#]+\/chat_conversations\/([a-f0-9-]+)(?:[\/?#]|$)/i;
@@ -45,30 +46,59 @@
   }
 
   function emitConversationIds(text) {
-    if (typeof text !== 'string') return;
+    if (typeof text !== 'string') return false;
 
     const normalizedText = text.replace(/\\"/g, '"');
     const conversationIds = new Set();
     let match;
     while ((match = CHATGPT_CONVERSATION_ID_PATTERN.exec(normalizedText))) {
-      conversationIds.add(match[1]);
+      conversationIds.add(match[1] || match[2]);
     }
     CHATGPT_CONVERSATION_ID_PATTERN.lastIndex = 0;
 
     for (const conversationId of conversationIds) {
       emitConversationId(conversationId);
     }
+    return conversationIds.size > 0;
   }
 
-  function observeChatGPTConversationResponse(requestUrl, requestMethod, response) {
-    if (!CHATGPT_CONVERSATION_URL_PATTERN.test(requestUrl)) {
+  async function observeChatGPTConversationResponse(requestUrl, requestMethod, response, signal) {
+    if (!CHATGPT_CONVERSATION_URL_PATTERN.test(requestUrl)) return;
+
+    const route = requestMethod === 'GET' && requestUrl.match(CHATGPT_CONVERSATION_ROUTE_PATTERN);
+    if (route) {
+      // Exports fetch the full tree on demand; observing a history load must
+      // not duplicate its (potentially very large) response body.
+      emitConversationId(route[1]);
       return;
     }
 
+    let reader;
+    const cancel = () => { if (reader) reader.cancel().catch(() => {}); };
     try {
-      response.clone().text().then(emitConversationIds).catch(() => {});
+      if (!response.body || signal?.aborted) return;
+      reader = response.clone().body.getReader();
+      signal?.addEventListener('abort', cancel, { once: true });
+      const decoder = new TextDecoder();
+      let tail = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = tail + decoder.decode(value, { stream: true });
+        // Read only until the ID is known, rather than buffering the reply to
+        // EOF. An active tee branch can otherwise hold page cancellation open.
+        if (emitConversationIds(text) || /(?:^|\r?\n)data:\s*\[DONE\](?:\r?\n|$)/.test(text)) break;
+        // Keep enough context for an ID/escaped key split across chunks.
+        tail = text.slice(-CHATGPT_STREAM_ID_TAIL_LENGTH);
+      }
     } catch (e) {
-      // Some response types cannot be cloned; the page request must still complete.
+      // Observation failures must never reject the page's fetch or stream.
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      // Do not await cancellation of a tee branch: the page still owns the
+      // other branch and may be reading the rest of the reply.
+      cancel();
+      reader?.releaseLock();
     }
   }
 
@@ -182,100 +212,86 @@
 
   // Intercept fetch requests
   const originalFetch = window.fetch;
-  window.fetch = async function(...args) {
+  window.fetch = function(...args) {
     let requestUrl = '';
-    const request = args[0] && typeof args[0] === 'object' ? args[0] : null;
-    if (typeof args[0] === 'string') {
-      requestUrl = args[0];
-    } else if (typeof URL !== 'undefined' && args[0] instanceof URL) {
-      requestUrl = args[0].href;
-    } else if (args[0] && typeof args[0] === 'object') {
-      requestUrl = args[0].url || '';
-    }
-    const options = args[1] || {};
-    const requestMethod = (options.method || request?.method || 'GET').toUpperCase();
-    const requestHeaders = options.headers || request?.headers;
-    const isBackendRequest = typeof requestUrl === 'string' && /\/backend-api\//i.test(requestUrl);
-    const isClaudeRequest = typeof requestUrl === 'string' && CLAUDE_CONVERSATION_URL_PATTERN.test(requestUrl);
-    const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_CONVERSATION_URL_PATTERN.test(requestUrl);
-    const isPerplexityRequest = isPerplexityHost() &&
-      typeof requestUrl === 'string' &&
-      PERPLEXITY_RELEVANT_URL_PATTERN.test(requestUrl);
-
-    if (isBackendRequest) {
-      observeChatGPTConversationRequest(requestUrl, requestMethod, options.body);
-    }
-    if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
-    if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, options.body);
-    if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, options.body);
-    if (
-      request &&
-      typeof request.clone === 'function' &&
-      typeof requestUrl === 'string' &&
-      requestMethod !== 'GET' &&
-      (isBackendRequest || isClaudeRequest || isGeminiRequest || isPerplexityRequest)
-    ) {
-      try {
-        request.clone().text().then(body => {
-          if (isBackendRequest) observeChatGPTConversationRequest(requestUrl, requestMethod, body);
-          if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
-          if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, body);
-          if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, body);
-        })
-          .catch(() => {});
-      } catch (e) {
-        // Some Request bodies cannot be cloned; the page request must still complete.
+    let requestMethod = 'GET';
+    let requestHeaders;
+    let signal;
+    let isBackendRequest = false;
+    let isClaudeRequest = false;
+    let isPerplexityRequest = false;
+    try {
+      const request = args[0] && typeof args[0] === 'object' ? args[0] : null;
+      if (typeof args[0] === 'string') {
+        requestUrl = args[0];
+      } else if (typeof URL !== 'undefined' && args[0] instanceof URL) {
+        requestUrl = args[0].href;
+      } else if (args[0] && typeof args[0] === 'object') {
+        requestUrl = args[0].url || '';
       }
-    }
+      const options = args[1] || {};
+      requestMethod = String(options.method || request?.method || 'GET').toUpperCase();
+      signal = options.signal === undefined ? request?.signal : options.signal;
+      requestHeaders = options.headers || request?.headers;
+      isBackendRequest = typeof requestUrl === 'string' && /\/backend-api\//i.test(requestUrl);
+      isClaudeRequest = typeof requestUrl === 'string' && CLAUDE_CONVERSATION_URL_PATTERN.test(requestUrl);
+      const isGeminiRequest = typeof requestUrl === 'string' && GEMINI_CONVERSATION_URL_PATTERN.test(requestUrl);
+      isPerplexityRequest = isPerplexityHost() &&
+        typeof requestUrl === 'string' &&
+        PERPLEXITY_RELEVANT_URL_PATTERN.test(requestUrl);
 
-    // 1. Try to capture Authorization header from outgoing requests
-    if (requestHeaders) {
-      let headers = requestHeaders;
-      let token = null;
-      if (headers instanceof Headers) {
-        if (headers.has('Authorization')) {
-          token = headers.get('Authorization');
-        }
-      } else if (typeof headers === 'object') {
-        const authKey = Object.keys(headers).find(k => k.toLowerCase() === 'authorization');
-        if (authKey) {
-          token = headers[authKey];
-        }
+      if (isBackendRequest) {
+        observeChatGPTConversationRequest(requestUrl, requestMethod, options.body);
       }
-      if (token && token.startsWith('Bearer ')) {
-        capturedToken = token;
-      }
-    }
-
-    // Call the original fetch
-    const response = await originalFetch.apply(this, args);
-
-    // 2. Intercept and cache conversation JSON responses
-    if (typeof requestUrl === 'string') {
-      observeChatGPTConversationResponse(requestUrl, requestMethod, response);
       if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
-      observeGeminiConversationResponse(requestUrl, response);
-      if (isPerplexityRequest) observePerplexityConversationResponse(requestUrl, response);
-    }
-    if (requestMethod === 'GET' && typeof requestUrl === 'string') {
-      if (CHATGPT_CONVERSATION_ROUTE_PATTERN.test(requestUrl)) {
+      if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, options.body);
+      if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, options.body);
+      if (
+        request &&
+        typeof request.clone === 'function' &&
+        typeof requestUrl === 'string' &&
+        requestMethod !== 'GET' &&
+        (isBackendRequest || isClaudeRequest || isGeminiRequest || isPerplexityRequest)
+      ) {
         try {
-          const match = requestUrl.match(CHATGPT_CONVERSATION_ROUTE_PATTERN);
-          if (match) {
-            const conversationId = match[1];
-            emitConversationId(conversationId);
-            const clonedResponse = response.clone();
-            clonedResponse.json().then(data => {
-              if (data && data.mapping && data.current_node) {
-                conversationCache[conversationId] = data;
-              }
-            }).catch(err => {});
-          }
+          request.clone().text().then(body => {
+            if (isBackendRequest) observeChatGPTConversationRequest(requestUrl, requestMethod, body);
+            if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
+            if (isGeminiRequest) observeGeminiConversationRequest(requestUrl, requestMethod, body);
+            if (isPerplexityRequest) observePerplexityConversationRequest(requestUrl, requestMethod, body);
+          })
+            .catch(() => {});
         } catch (e) {
-          console.error('[Exporter Inject] Error processing ChatGPT fetch:', e);
+          // Some Request bodies cannot be cloned; the page request must still complete.
         }
-      } else if (requestUrl.includes('/api/organizations/') && requestUrl.includes('/chat_conversations/')) {
-        try {
+      }
+    } catch (e) {
+      console.error('[Exporter Inject] Could not observe fetch request:', e);
+    }
+
+    // Preserve the original request, promise, response and rejection. Exporter
+    // observation runs separately and cannot turn a successful fetch into a failure.
+    const fetchPromise = originalFetch.apply(this, args);
+    try {
+      if (isBackendRequest && requestHeaders) {
+        // Let native fetch consume HeadersInit first: it may be a one-shot
+        // iterator. Headers then normalizes the remaining observable values.
+        const token = new Headers(requestHeaders).get('Authorization');
+        if (token?.startsWith('Bearer ')) capturedToken = token;
+      }
+    } catch (e) {
+      console.error('[Exporter Inject] Could not observe fetch headers:', e);
+    }
+    fetchPromise.then(response => {
+      try {
+        // 2. Intercept and cache conversation JSON responses
+        if (typeof requestUrl === 'string') {
+          observeChatGPTConversationResponse(requestUrl, requestMethod, response, signal).catch(() => {});
+          if (isClaudeRequest) emitClaudeConversationIdFromUrl(requestUrl);
+          observeGeminiConversationResponse(requestUrl, response);
+          if (isPerplexityRequest) observePerplexityConversationResponse(requestUrl, response);
+        }
+        if (requestMethod === 'GET' && isClaudeRequest) {
           const match = requestUrl.match(/\/api\/organizations\/([a-f0-9-]+)\/chat_conversations\/([a-f0-9-]+)/);
           if (match) {
             const orgId = match[1];
@@ -286,21 +302,20 @@
               if (data && data.chat_messages) {
                 conversationCache[conversationId] = { source: 'claude', orgId, data };
               }
-            }).catch(err => {});
+            }).catch(() => {});
           }
-        } catch (e) {
-          console.error('[Exporter Inject] Error processing Claude fetch:', e);
         }
+
+        // 3. Perplexity changes its private endpoints frequently, so cache any plausible
+        // thread payload observed through the page's own authenticated fetches.
+        if (typeof requestUrl === 'string' && isPerplexityHost()) {
+          maybeCachePerplexityResponse(requestUrl, response);
+        }
+      } catch (e) {
+        console.error('[Exporter Inject] Could not observe fetch response:', e);
       }
-    }
-
-    // 3. Perplexity changes its private endpoints frequently, so cache any plausible
-    // thread payload observed through the page's own authenticated fetches.
-    if (typeof requestUrl === 'string' && isPerplexityHost()) {
-      maybeCachePerplexityResponse(requestUrl, response);
-    }
-
-    return response;
+    }).catch(() => {});
+    return fetchPromise;
   };
 
   // Helper function to fetch the token from the session endpoint
@@ -345,18 +360,14 @@
             }
           });
           if (retryResponse.ok) {
-            const data = await retryResponse.json();
-            conversationCache[conversationId] = data;
-            return data;
+            return retryResponse.json();
           }
         }
       }
       throw new Error(`Failed to fetch conversation: ${response.statusText} (${response.status})`);
     }
 
-    const data = await response.json();
-    conversationCache[conversationId] = data;
-    return data;
+    return response.json();
   }
 
   function isChatGPTTemporaryPage() {

@@ -11,7 +11,7 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 - **Instant Export**: No scrolling, no waiting. Click and download immediately.
 - **High Integrity**: Prefers complete internal payloads and clearly marks fallback exports with integrity warnings.
 - **Multi-Platform Support**:
-  - **ChatGPT**: Intercepts ChatGPT's internal backend API responses containing the complete conversation tree.
+  - **ChatGPT**: Fetches the complete conversation tree when exporting. Live replies are observed only until their conversation ID is found, then the observation stream is released.
   - **Claude.ai**: Queries Claude's organization-scoped conversation API.
   - **Gemini**: Direct query to Gemini's internal `batchexecute` RPC endpoint (`hNvQHb`) from the page context, retrieving up to 1000 messages in a single fast request.
   - **Perplexity**: Uses layered extraction for changing Perplexity routes and APIs: cached internal JSON first, hydration data second, and visible thread DOM as a final fallback.
@@ -34,6 +34,8 @@ For ChatGPT, Claude, and Gemini, this extension bypasses the visible DOM and que
 3. Enable **Developer mode** using the toggle in the top-right corner.
 4. Click **Load unpacked** in the top-left corner.
 5. Select the folder containing these files.
+
+No build is required. After updating an unpacked installation, click **Reload** on its extension card, then refresh the ChatGPT tab so it uses the updated scripts.
 
 ---
 
